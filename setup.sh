@@ -34,6 +34,37 @@ if [ ! -e "$COMMANDS_DIR" ]; then
 fi
 
 echo "Done! ~/.claude/commands -> $REPO_DIR/commands"
+
+# --- dev-aliases.sh: symlink into home + wire .zshrc ---
+ALIASES_LINK="$HOME/.dev-aliases.sh"
+
+# Back up a real file in the way (timestamped), then clear any stale symlink
+if [ -f "$ALIASES_LINK" ] && [ ! -L "$ALIASES_LINK" ]; then
+    BACKUP="$ALIASES_LINK.bak.$(date +%Y%m%d-%H%M%S)"
+    echo "Backing up existing dev-aliases.sh to $BACKUP"
+    mv "$ALIASES_LINK" "$BACKUP"
+fi
+[ -L "$ALIASES_LINK" ] && rm "$ALIASES_LINK"
+
+# Symlink home -> repo copy
+ln -s "$REPO_DIR/dev-aliases.sh" "$ALIASES_LINK"
+
+# Verify the link resolves
+if [ ! -e "$ALIASES_LINK" ]; then
+    echo "ERROR: dev-aliases symlink created but target $REPO_DIR/dev-aliases.sh does not exist"
+    exit 1
+fi
+echo "Done! ~/.dev-aliases.sh -> $REPO_DIR/dev-aliases.sh"
+
+# Wire the source line into .zshrc (only if missing)
+ZSHRC="$HOME/.zshrc"
+if grep -qF '.dev-aliases.sh' "$ZSHRC" 2>/dev/null; then
+    echo "Source line already in $ZSHRC, leaving it"
+else
+    echo '[ -f ~/.dev-aliases.sh ] && source ~/.dev-aliases.sh' >> "$ZSHRC"
+    echo "Added source line to $ZSHRC"
+fi
+
 echo ""
 echo "Available commands:"
 ls "$COMMANDS_DIR"/*.md 2>/dev/null | while read f; do
