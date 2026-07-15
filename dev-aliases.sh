@@ -1,27 +1,19 @@
 #!/usr/bin/env bash
 # dev-aliases.sh — local dev server + cloudflare tunnel, on your clock.
-# Works in zsh or bash. Source this from your shell rc file.
 #
-#   devup         server + tunnel, port auto-detected (or pass one:  devup 8000)
-#   devdown       kill the server + tunnel on that port
-#   cc            launch Claude Code with the stack auto-started before and
-#                 auto-killed after. Same behavior on a fresh start OR a resume,
-#                 and it tears down no matter how you quit. Args pass straight
-#                 through, so:   cc            (fresh)
-#                                cc --resume   /  cc --continue   (resume)
+#   devup     server + tunnel, port auto-detected (or pass one:  devup 8000)
+#   devdown   kill the server + tunnel for that port
+#   cc        launch Claude Code with the stack up before and torn down after
+#   tunnel    print the current tunnel URL (and re-copy it to the clipboard)
 #
-# When the tunnel comes up, the public URL is copied to your clipboard AND
-# shown as a macOS notification, so you never have to dig it out of a log.
+# The tunnel URL is copied to the clipboard and opened in the browser once the
+# tunnel is actually resolving (so no dead-hostname tabs).
 #
-# Port + server are auto-detected from the project:
-#   - package.json with a real "dev" script -> npm run dev  (Next 3000 / Vite 5173)
-#   - anything else (plain static frontend)  -> a static server on :8000
-# The static server prefers python3, and falls back to `npx http-server` so it
-# works the same on a machine that doesn't have python3.
+# Teardown targets whatever owns the port (lsof), not the npm parent — npm
+# doesn't forward signals to the next-server grandchild that holds the socket,
+# so killing by port is the only reliable way. Escalates to kill -9. Tunnel is
+# killed by tracked PID, never a blanket pkill (which would kill other tunnels).
 
-# detect how to serve the current dir. echoes "<port> <kind>":
-#   npm    -> package.json has a real "dev" script
-#   static -> everything else, served on :8000
 _dev_detect() {
   local port kind script
   if [ -f package.json ] && grep -q '"dev"[[:space:]]*:' package.json; then
@@ -41,85 +33,122 @@ devup() {
   port="${1:-${detected%% *}}"
   kind="${detected##* }"
 
+  local pidfile="/tmp/devstack-$port.pids"
+  local cflog="/tmp/cftunnel-$port.log"
+  local srvlog="/tmp/devserver-$port.log"
+
   if ! command -v cloudflared >/dev/null 2>&1; then
     echo "cloudflared not found. install it once per machine:  brew install cloudflared"
     return 1
   fi
 
-  # start the right kind of server, unless something's already on the port
+  # --- server ---
   if lsof -i ":$port" >/dev/null 2>&1; then
     echo "something's already on :$port, leaving it be"
   elif [ "$kind" = npm ]; then
-    npm run dev > "/tmp/devserver-$port.log" 2>&1 &
+    npm run dev > "$srvlog" 2>&1 &
+    echo "$!" >> "$pidfile"
     echo "npm dev server booting on :$port"
   else
-    # static frontend: prefer python3 (our convention), fall back to node so
-    # this works on a machine without python3 too
     if command -v python3 >/dev/null 2>&1; then
-      python3 -m http.server "$port" > "/tmp/devserver-$port.log" 2>&1 &
+      python3 -m http.server "$port" > "$srvlog" 2>&1 &
     elif command -v npx >/dev/null 2>&1; then
-      npx --yes http-server -p "$port" -c-1 . > "/tmp/devserver-$port.log" 2>&1 &
+      npx --yes http-server -p "$port" -c-1 . > "$srvlog" 2>&1 &
     else
       echo "need python3 or node to serve static files"; return 1
     fi
+    echo "$!" >> "$pidfile"
     echo "static server booting on :$port (serving $(pwd))"
-    [ -f index.html ] || echo "  heads up: no index.html here — are you in the experiment folder?"
+    [ -f index.html ] || echo "  heads up: no index.html here — are you in the right folder?"
   fi
 
-  # don't open a tunnel until the server actually answers (max ~20s)
+  # --- wait for the server to actually answer (max ~30s) ---
   local i=0
   until curl -s -o /dev/null "http://localhost:$port"; do
     i=$((i+1))
-    if [ "$i" -ge 40 ]; then
+    if [ "$i" -ge 60 ]; then
       echo "server never came up on :$port, NOT opening a tunnel. last log lines:"
-      tail -15 "/tmp/devserver-$port.log" 2>/dev/null
+      tail -15 "$srvlog" 2>/dev/null
       return 1
     fi
     sleep 0.5
   done
   echo ":$port is live"
 
-  # now the tunnel has something real behind it
-  if pgrep -f "cloudflared tunnel" >/dev/null 2>&1; then
-    echo "a tunnel's already up, not starting another"
+  # --- tunnel (only start one if we don't already have a live one here) ---
+  if pgrep -f "cloudflared tunnel --url http://localhost:$port" >/dev/null 2>&1; then
+    echo "tunnel for :$port already running"
   else
-    cloudflared tunnel --url "http://localhost:$port" > "/tmp/cftunnel-$port.log" 2>&1 &
+    : > "$cflog"
+    cloudflared tunnel --url "http://localhost:$port" > "$cflog" 2>&1 &
+    echo "$!" >> "$pidfile"
   fi
 
+  # --- wait for the URL ---
   local url="" j=0
-  while [ "$j" -lt 10 ]; do
-    url=$(grep -o 'https://[a-z0-9-]*\.trycloudflare\.com' "/tmp/cftunnel-$port.log" 2>/dev/null | head -1)
+  while [ "$j" -lt 15 ]; do
+    url=$(grep -o 'https://[a-z0-9-]*\.trycloudflare\.com' "$cflog" 2>/dev/null | head -1)
     [ -n "$url" ] && break
     sleep 1; j=$((j+1))
   done
-  if [ -n "$url" ]; then
-    echo "public URL:  $url"
-    # surface it where the Claude Code UI can't bury it:
-    command -v pbcopy >/dev/null 2>&1 && printf '%s' "$url" | pbcopy && echo "  (copied to clipboard)"
-    command -v osascript >/dev/null 2>&1 && \
-      osascript -e "display notification \"$url\" with title \"Tunnel ready on :$port\" subtitle \"copied to clipboard\"" >/dev/null 2>&1
-  else
-    echo "tunnel still starting — check /tmp/cftunnel-$port.log in a sec"
+  if [ -z "$url" ]; then
+    echo "tunnel didn't produce a URL — check $cflog"
+    return 1
   fi
+
+  # --- don't hand over a hostname that isn't resolving yet (no NXDOMAIN tabs) ---
+  local k=0
+  until curl -s -o /dev/null --max-time 3 "$url"; do
+    k=$((k+1))
+    [ "$k" -ge 15 ] && { echo "tunnel URL not resolving yet, opening anyway: $url"; break; }
+    sleep 1
+  done
+
+  printf '%s' "$url" > /tmp/tunnel-url
+  echo "public URL:  $url"
+  command -v pbcopy >/dev/null 2>&1 && printf '%s' "$url" | pbcopy && echo "  (copied to clipboard)"
+  command -v open   >/dev/null 2>&1 && open "$url"
 }
 
 devdown() {
   local port="${1:-$(_dev_detect | awk '{print $1}')}"
+  local pidfile="/tmp/devstack-$port.pids"
+
+  # kill the tunnel(s) we started, by tracked PID
+  if [ -f "$pidfile" ]; then
+    while read -r p; do
+      [ -n "$p" ] && kill "$p" 2>/dev/null
+    done < "$pidfile"
+    rm -f "$pidfile"
+  fi
+
+  # kill whatever actually holds the port — catches the next-server grandchild
+  # that a parent kill would miss. escalate to -9 if it clings.
   local pids
   pids=$(lsof -ti ":$port" 2>/dev/null)
-  [ -n "$pids" ] && kill $pids 2>/dev/null
-  pkill -f "cloudflared tunnel"
-  echo "killed server on :$port + tunnel"
+  [ -n "$pids" ] && kill $pids 2>/dev/null && sleep 1
+  pids=$(lsof -ti ":$port" 2>/dev/null)
+  [ -n "$pids" ] && kill -9 $pids 2>/dev/null
+
+  echo "killed server + tunnel on :$port"
 }
 
-# launch Claude Code wrapped in the dev stack: up before, down after, every
-# time, no matter how the session starts or how you quit. The subshell + trap
-# is what guarantees teardown even on Ctrl-C or a closed window.
+tunnel() {
+  if [ -s /tmp/tunnel-url ]; then
+    cat /tmp/tunnel-url; echo
+    command -v pbcopy >/dev/null 2>&1 && printf '%s' "$(cat /tmp/tunnel-url)" | pbcopy
+  else
+    echo "no tunnel URL recorded — is one running?"
+  fi
+}
+
+# Launch Claude Code with the stack up before and torn down after.
+# No subshell, no trap: `claude` blocks in the current shell, and devdown runs
+# when it returns. Teardown fires on /exit, and nothing kills the tunnel while
+# you're still working.
 cc() {
   local port; port="$(_dev_detect | awk '{print $1}')"
-  (
-    trap "devdown $port" EXIT HUP
-    devup "$port"
-    claude "$@"
-  )
+  devup "$port"
+  claude "$@"
+  devdown "$port"
 }
