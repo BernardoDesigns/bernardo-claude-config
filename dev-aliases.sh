@@ -80,7 +80,7 @@ devup() {
     echo "tunnel for :$port already running"
   else
     : > "$cflog"
-    cloudflared tunnel --url "http://localhost:$port" > "$cflog" 2>&1 &
+    nohup cloudflared tunnel --protocol http2 --url "http://localhost:$port" > "$cflog" 2>&1 & disown
     echo "$!" >> "$pidfile"
   fi
 
