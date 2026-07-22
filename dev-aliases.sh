@@ -4,15 +4,15 @@
 #   devup     server + tunnel, port auto-detected (or pass one:  devup 8000)
 #   devdown   kill the server + tunnel for that port
 #   cc        launch Claude Code with the stack up before and torn down after
-#   tunnel    print the current tunnel URL (and re-copy it to the clipboard)
+#   tunnel    print the current tunnel URL (optionally per port: tunnel 8000)
 #
-# The tunnel URL is copied to the clipboard and opened in the browser once the
-# tunnel is actually resolving (so no dead-hostname tabs).
+# Tunnels always use --protocol http2. QUIC (the cloudflared default) fails on
+# some wired networks: the tunnel registers fine but the hostname never becomes
+# publicly resolvable. http2 rides TCP and works everywhere.
 #
-# Teardown targets whatever owns the port (lsof), not the npm parent — npm
-# doesn't forward signals to the next-server grandchild that holds the socket,
-# so killing by port is the only reliable way. Escalates to kill -9. Tunnel is
-# killed by tracked PID, never a blanket pkill (which would kill other tunnels).
+# The tunnel is launched detached (nohup + disown) so the Claude Code session
+# can't signal it, and teardown is PID-tracked so we never blanket-kill a tunnel
+# belonging to another project.
 
 _dev_detect() {
   local port kind script
@@ -36,6 +36,7 @@ devup() {
   local pidfile="/tmp/devstack-$port.pids"
   local cflog="/tmp/cftunnel-$port.log"
   local srvlog="/tmp/devserver-$port.log"
+  local urlfile="/tmp/tunnel-url-$port"
 
   if ! command -v cloudflared >/dev/null 2>&1; then
     echo "cloudflared not found. install it once per machine:  brew install cloudflared"
@@ -75,10 +76,25 @@ devup() {
   done
   echo ":$port is live"
 
-  # --- tunnel (only start one if we don't already have a live one here) ---
-  if pgrep -f "cloudflared tunnel --url http://localhost:$port" >/dev/null 2>&1; then
-    echo "tunnel for :$port already running"
+  # --- tunnel ---
+  # Only count tunnels THIS devup started (tracked in the pidfile). A stray
+  # cloudflared started by something else (e.g. Claude Code) must not suppress
+  # ours — theirs is likely QUIC and therefore dead on this network.
+  local mine=""
+  if [ -f "$pidfile" ]; then
+    while read -r p; do
+      [ -n "$p" ] && ps -p "$p" -o command= 2>/dev/null | grep -q cloudflared && mine="$p"
+    done < "$pidfile"
+  fi
+
+  if [ -n "$mine" ]; then
+    echo "tunnel for :$port already running (pid $mine)"
   else
+    # warn about foreign tunnels so a stale one doesn't confuse the URL
+    local foreign
+    foreign=$(pgrep -f "cloudflared tunnel.*localhost:$port" 2>/dev/null | tr '\n' ' ')
+    [ -n "$foreign" ] && echo "  note: other cloudflared on :$port ($foreign) — run devdown $port to clear"
+
     : > "$cflog"
     nohup cloudflared tunnel --protocol http2 --url "http://localhost:$port" > "$cflog" 2>&1 & disown
     echo "$!" >> "$pidfile"
@@ -87,7 +103,7 @@ devup() {
   # --- wait for the URL ---
   local url="" j=0
   while [ "$j" -lt 15 ]; do
-    url=$(grep -o 'https://[a-z0-9-]*\.trycloudflare\.com' "$cflog" 2>/dev/null | head -1)
+    url=$(grep -o 'https://[a-z0-9-]*\.trycloudflare\.com' "$cflog" 2>/dev/null | tail -1)
     [ -n "$url" ] && break
     sleep 1; j=$((j+1))
   done
@@ -96,15 +112,16 @@ devup() {
     return 1
   fi
 
-  # --- don't hand over a hostname that isn't resolving yet (no NXDOMAIN tabs) ---
-  local k=0
-  until curl -s -o /dev/null --max-time 3 "$url"; do
+  # --- don't hand over a hostname that isn't resolving yet ---
+  local host k=0
+  host="${url#https://}"
+  until nslookup "$host" >/dev/null 2>&1; do
     k=$((k+1))
-    [ "$k" -ge 15 ] && { echo "tunnel URL not resolving yet, opening anyway: $url"; break; }
+    [ "$k" -ge 20 ] && { echo "tunnel URL not resolving yet, opening anyway: $url"; break; }
     sleep 1
   done
 
-  printf '%s' "$url" > /tmp/tunnel-url
+  printf '%s' "$url" > "$urlfile"
   echo "public URL:  $url"
   command -v pbcopy >/dev/null 2>&1 && printf '%s' "$url" | pbcopy && echo "  (copied to clipboard)"
   command -v open   >/dev/null 2>&1 && open "$url"
@@ -114,13 +131,17 @@ devdown() {
   local port="${1:-$(_dev_detect | awk '{print $1}')}"
   local pidfile="/tmp/devstack-$port.pids"
 
-  # kill the tunnel(s) we started, by tracked PID
+  # kill what we started, by tracked PID
   if [ -f "$pidfile" ]; then
     while read -r p; do
       [ -n "$p" ] && kill "$p" 2>/dev/null
     done < "$pidfile"
     rm -f "$pidfile"
   fi
+
+  # kill any OTHER cloudflared pointed at this port (orphans from elsewhere).
+  # Scoped to the port, so a tunnel for another project is never touched.
+  pkill -f "cloudflared tunnel.*localhost:$port" 2>/dev/null
 
   # kill whatever actually holds the port — catches the next-server grandchild
   # that a parent kill would miss. escalate to -9 if it clings.
@@ -130,15 +151,18 @@ devdown() {
   pids=$(lsof -ti ":$port" 2>/dev/null)
   [ -n "$pids" ] && kill -9 $pids 2>/dev/null
 
+  rm -f "/tmp/tunnel-url-$port"
   echo "killed server + tunnel on :$port"
 }
 
 tunnel() {
-  if [ -s /tmp/tunnel-url ]; then
-    cat /tmp/tunnel-url; echo
-    command -v pbcopy >/dev/null 2>&1 && printf '%s' "$(cat /tmp/tunnel-url)" | pbcopy
+  local port="${1:-$(_dev_detect | awk '{print $1}')}"
+  local urlfile="/tmp/tunnel-url-$port"
+  if [ -s "$urlfile" ]; then
+    cat "$urlfile"; echo
+    command -v pbcopy >/dev/null 2>&1 && printf '%s' "$(cat "$urlfile")" | pbcopy
   else
-    echo "no tunnel URL recorded — is one running?"
+    echo "no tunnel URL recorded for :$port — is one running?"
   fi
 }
 
