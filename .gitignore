@@ -1,1 +1,11 @@
 .DS_Store
+
+# Status line runtime state. Lives under ~/.claude, never here, but guard
+# against it landing in the repo if ~/.claude is ever pointed at this checkout.
+statusline-limits.json
+statusline-limits.json.*
+.cache/
+ccusage-*.json
+
+# setup.sh backups
+*.bak.*

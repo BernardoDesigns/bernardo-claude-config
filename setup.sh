@@ -65,6 +65,54 @@ else
     echo "Added source line to $ZSHRC"
 fi
 
+# --- statusline.sh: symlink into ~/.claude + wire settings.json ---
+STATUSLINE_LINK="$CLAUDE_DIR/statusline.sh"
+
+# Back up a real file in the way (timestamped), then clear any stale symlink
+if [ -f "$STATUSLINE_LINK" ] && [ ! -L "$STATUSLINE_LINK" ]; then
+    BACKUP="$STATUSLINE_LINK.bak.$(date +%Y%m%d-%H%M%S)"
+    echo "Backing up existing statusline.sh to $BACKUP"
+    mv "$STATUSLINE_LINK" "$BACKUP"
+fi
+[ -L "$STATUSLINE_LINK" ] && rm "$STATUSLINE_LINK"
+
+# Symlink ~/.claude -> repo copy
+ln -s "$REPO_DIR/statusline.sh" "$STATUSLINE_LINK"
+
+if [ ! -e "$STATUSLINE_LINK" ]; then
+    echo "ERROR: statusline symlink created but target $REPO_DIR/statusline.sh does not exist"
+    exit 1
+fi
+echo "Done! ~/.claude/statusline.sh -> $REPO_DIR/statusline.sh"
+
+# Dependencies: warn loudly instead of failing silently
+if ! command -v jq >/dev/null 2>&1; then
+    echo "WARNING: jq not found. The status line and the settings merge below need it:"
+    echo "    brew install jq"
+fi
+if ! command -v ccusage >/dev/null 2>&1; then
+    echo "WARNING: ccusage not found. The status line will fall back to npx (slow on first run). Install it:"
+    echo "    npm install -g ccusage"
+fi
+
+# Merge statusLine into settings.json, leaving every other key untouched
+SETTINGS="$CLAUDE_DIR/settings.json"
+if command -v jq >/dev/null 2>&1; then
+    [ -s "$SETTINGS" ] || echo '{}' > "$SETTINGS"
+    WANT='{"type":"command","command":"~/.claude/statusline.sh"}'
+    if jq -e --argjson want "$WANT" '.statusLine == $want' "$SETTINGS" >/dev/null 2>&1; then
+        echo "statusLine already set in $SETTINGS, leaving it"
+    elif MERGED=$(jq --argjson want "$WANT" '.statusLine = $want' "$SETTINGS"); then
+        # Write in place (not mv) so a symlinked settings.json stays a symlink
+        printf '%s\n' "$MERGED" > "$SETTINGS"
+        echo "Set statusLine in $SETTINGS"
+    else
+        echo "ERROR: $SETTINGS is not valid JSON, left it alone. Fix it and re-run."
+    fi
+else
+    echo "Skipped statusLine in $SETTINGS (needs jq)"
+fi
+
 echo ""
 echo "Available commands:"
 ls "$COMMANDS_DIR"/*.md 2>/dev/null | while read f; do
