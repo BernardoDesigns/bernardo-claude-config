@@ -61,11 +61,9 @@ Requirements:
 
 ```bash
 brew install cloudflared jq
-npm install -g ccusage
 ```
 
-`setup.sh` checks for `jq` and `ccusage` and prints the install command if
-either is missing.
+`setup.sh` checks for `jq` and prints the install command if it's missing.
 
 ---
 
@@ -74,12 +72,14 @@ either is missing.
 Two lines at the bottom of every Claude Code session:
 
 ```
-Opus 5.5 | session $1.24 | ctx ▓▓▓░░░░░░░ 31% | today $18.40 (all projects)
+Opus 5.5 | session $1.24 | ctx ▓▓▓░░░░░░░ 31%
 session ▓▓▓▓░░░░░░ 42% resets 6:20 PM | week ▓▓░░░░░░░░ 18% resets Tue 2:00 PM
 ```
 
-- **Line 1:** model, this session's cost, context window fill, and today's
-  spend across every project (from `ccusage`, cached for 60s).
+- **Line 1:** model, this session's cost, and context window fill. When the
+  5-hour or 7-day limit hits 100%, a red `⚡ using credits` gets tacked on the
+  end so you know you're burning extra usage:
+  `Opus 5.5 | session $1.24 | ctx ▓▓▓░░░░░░░ 31% | ⚡ using credits`
 - **Line 2:** rate limits for the 5-hour session window and the 7-day week.
   Bars go green under 50%, yellow to 80%, red above.
 
@@ -87,7 +87,8 @@ A fresh session doesn't get rate limit data until the first response lands, so
 the last known values are cached in `~/.claude/statusline-limits.json`. When
 line 2 is showing cached numbers you'll see a `·` after the percentage
 (`42% ·`). It drops off as soon as live data arrives. If a window's reset time
-has already passed, the bar shows 0% instead of stale usage.
+has already passed, the bar shows 0% instead of stale usage (and it won't
+trigger the credits flag either).
 
 ---
 

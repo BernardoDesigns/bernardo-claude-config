@@ -1,6 +1,6 @@
 #!/bin/bash
 # Claude Code status line (global default).
-# Line 1: model | session cost | ctx bar | today's total across all projects
+# Line 1: model | session cost | ctx bar | "⚡ using credits" when a limit is hit
 # Line 2: rate limit bars (5-hour session, 7-day week), cached across sessions
 #         so a fresh session still shows them before rate_limits arrives.
 
@@ -10,50 +10,7 @@ model_name=$(printf '%s' "$input" | jq -r '.model.display_name // "Claude"')
 used_pct=$(printf '%s' "$input" | jq -r '.context_window.used_percentage // empty')
 session_cost=$(printf '%s' "$input" | jq -r '.cost.total_cost_usd // empty')
 
-cache_dir="$HOME/.claude/.cache"
 limits_cache="$HOME/.claude/statusline-limits.json"
-mkdir -p "$cache_dir" 2>/dev/null
-
-# --- ccusage (today's total, all projects), cached 60s -----------------------
-
-ccusage_bin=""
-if command -v ccusage >/dev/null 2>&1; then
-  ccusage_bin="ccusage"
-elif command -v npx >/dev/null 2>&1; then
-  ccusage_bin="npx --yes ccusage@latest"
-fi
-
-# fetch_cached <cache-file-name> <ccusage args...>
-# Reuses a cached response under 60s old; falls back to a stale cache if the
-# live call fails so a flaky npx call never blanks the line.
-fetch_cached() {
-  local cache_file="$cache_dir/$1"
-  shift
-  local now mtime
-  now=$(date +%s)
-  if [ -f "$cache_file" ]; then
-    mtime=$(stat -f %m "$cache_file" 2>/dev/null || stat -c %Y "$cache_file" 2>/dev/null)
-    if [ -n "$mtime" ] && [ $((now - mtime)) -lt 60 ]; then
-      cat "$cache_file"
-      return
-    fi
-  fi
-  local output=""
-  if [ -n "$ccusage_bin" ]; then
-    output=$($ccusage_bin "$@" 2>/dev/null)
-  fi
-  if [ -n "$output" ]; then
-    printf '%s' "$output" > "$cache_file"
-    printf '%s' "$output"
-  elif [ -f "$cache_file" ]; then
-    cat "$cache_file"
-  fi
-}
-
-daily_json=$(fetch_cached "ccusage-daily.json" daily --json)
-today=$(date +%F)
-today_cost=$(printf '%s' "$daily_json" | jq -r --arg today "$today" \
-  '[.daily[]? | select((.period // .date) == $today) | .totalCost] | add // empty' 2>/dev/null)
 
 fmt_cost() {
   if [ -z "$1" ] || [ "$1" = "null" ]; then
@@ -118,18 +75,7 @@ format_reset() {
   fi
 }
 
-# --- line 1 -------------------------------------------------------------------
-
-if [ -n "$used_pct" ] && [ "$used_pct" != "null" ]; then
-  ctx_bar=$(make_bar "$used_pct")
-else
-  ctx_bar=$(make_bar 0)
-fi
-
-printf '%s | session %s | ctx %s | today %s (all projects)\n' \
-  "$model_name" "$(fmt_cost "$session_cost")" "$ctx_bar" "$(fmt_cost "$today_cost")"
-
-# --- line 2: rate limits ------------------------------------------------------
+# --- rate limits (live, or last known from cache) ----------------------------
 
 limits=$(printf '%s' "$input" | jq -c '.rate_limits // empty' 2>/dev/null)
 cached=""
@@ -142,6 +88,35 @@ elif [ -f "$limits_cache" ]; then
 fi
 
 now=$(date +%s)
+
+# limit_hit <window-key> -> success if that window is at 100%+ and hasn't reset
+limit_hit() {
+  local pct at epoch
+  pct=$(printf '%s' "$limits" | jq -r --arg k "$1" '.[$k].used_percentage // empty' 2>/dev/null)
+  [ -z "$pct" ] && return 1
+  at=$(printf '%s' "$limits" | jq -r --arg k "$1" '.[$k].resets_at // empty' 2>/dev/null)
+  epoch=$(to_epoch "$at")
+  [ -n "$epoch" ] && [ "$epoch" -le "$now" ] && return 1
+  [ "$(printf '%.0f' "$pct" 2>/dev/null || echo 0)" -ge 100 ]
+}
+
+credits=""
+if [ -n "$limits" ] && { limit_hit five_hour || limit_hit seven_day; }; then
+  credits=$(printf ' | %b⚡ using credits%b' "$red" "$reset")
+fi
+
+# --- line 1 -------------------------------------------------------------------
+
+if [ -n "$used_pct" ] && [ "$used_pct" != "null" ]; then
+  ctx_bar=$(make_bar "$used_pct")
+else
+  ctx_bar=$(make_bar 0)
+fi
+
+printf '%s | session %s | ctx %s%s\n' \
+  "$model_name" "$(fmt_cost "$session_cost")" "$ctx_bar" "$credits"
+
+# --- line 2: rate limits ------------------------------------------------------
 
 # limit_part <label> <window-key>
 limit_part() {

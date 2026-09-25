@@ -90,10 +90,6 @@ if ! command -v jq >/dev/null 2>&1; then
     echo "WARNING: jq not found. The status line and the settings merge below need it:"
     echo "    brew install jq"
 fi
-if ! command -v ccusage >/dev/null 2>&1; then
-    echo "WARNING: ccusage not found. The status line will fall back to npx (slow on first run). Install it:"
-    echo "    npm install -g ccusage"
-fi
 
 # Merge statusLine into settings.json, leaving every other key untouched
 SETTINGS="$CLAUDE_DIR/settings.json"
