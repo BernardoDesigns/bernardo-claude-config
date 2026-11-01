@@ -11,7 +11,8 @@
 // single tiny request, so a fresh reading lands in the file (see Refresher).
 //
 // Build:  swiftc -O main.swift -o AuroraHUD      (needs Xcode Command Line Tools)
-// Use:    shows while the Claude desktop app is open, hides when it quits.
+// Use:    shows while the Claude desktop app is open, hides when it quits
+//         (✕ hides it until Claude next launches).
 //         Click to collapse/expand, click ↻ to refresh, drag to move,
 //         right-click for Refresh, themes and Quit.
 
@@ -218,10 +219,11 @@ enum Prefs {
 // MARK: - The panel
 
 let EXPANDED = NSSize(width: 312, height: 82)
-let COLLAPSED = NSSize(width: 200, height: 30)
+let COLLAPSED = NSSize(width: 226, height: 30)
 
-// The icon buttons, in both sizes: refresh and minimize/maximize.
-enum Control { case refresh, toggle }
+// The icon buttons, in both sizes: refresh, minimize/maximize, and close
+// (hides the HUD until the next time the Claude desktop app launches).
+enum Control { case refresh, toggle, close }
 
 // Native tooltips don't show for a panel that never becomes key, so the HUD
 // draws its own: a small label above the hovered button, after the usual delay.
@@ -286,12 +288,13 @@ final class HUDView: NSView {
     private var hovered: Control?
     let tooltip = Tooltip()
 
-    private let controls: [Control] = [.refresh, .toggle]
+    private let controls: [Control] = [.refresh, .toggle, .close]
 
     private func tip(_ c: Control) -> String {
         switch c {
         case .refresh: return refreshing ? "Refreshing…" : "Refresh now · uses one small request"
         case .toggle: return Prefs.collapsed ? "Expand" : "Minimize"
+        case .close: return "Hide until Claude reopens"
         }
     }
 
@@ -300,11 +303,16 @@ final class HUDView: NSView {
         tooltip.show(tip(c), at: window.convertToScreen(convert(rect(c), to: nil)))
     }
 
-    // 24pt hit targets in the bottom-right corner, toggle outermost.
+    // 24pt hit targets in the bottom-right corner, close outermost.
     private func rect(_ c: Control) -> NSRect {
         let size: CGFloat = 24
         let y = Prefs.collapsed ? (bounds.height - size) / 2 : bounds.height - size - 6
-        let slot: CGFloat = c == .toggle ? 1 : 2
+        let slot: CGFloat
+        switch c {
+        case .close: slot = 1
+        case .toggle: slot = 2
+        case .refresh: slot = 3
+        }
         return NSRect(x: bounds.width - slot * size - 6 - (slot - 1) * 2, y: y, width: size, height: size)
     }
 
@@ -357,6 +365,7 @@ final class HUDView: NSView {
         switch c {
         case .refresh: name = "arrow.clockwise"
         case .toggle: name = Prefs.collapsed ? "arrow.up.left.and.arrow.down.right" : "arrow.down.right.and.arrow.up.left"
+        case .close: name = "xmark"
         }
         let config = NSImage.SymbolConfiguration(pointSize: 13, weight: .semibold)
         guard let symbol = NSImage(systemSymbolName: name, accessibilityDescription: nil)?
@@ -439,9 +448,16 @@ final class HUDView: NSView {
     override func mouseUp(with e: NSEvent) {
         guard !dragged else { return }
         tooltip.hide()
-        if control(at: convert(e.locationInWindow, from: nil)) == .refresh {
+        switch control(at: convert(e.locationInWindow, from: nil)) {
+        case .refresh:
             (window as? HUDPanel)?.refreshNow()
             return
+        case .close:
+            hovered = nil
+            (window as? HUDPanel)?.dismiss()
+            return
+        default:
+            break
         }
         hovered = nil
         Prefs.collapsed.toggle()
@@ -520,6 +536,8 @@ final class HUDView: NSView {
 
 final class HUDPanel: NSPanel {
     let hud = HUDView()
+    // Set by the close button; cleared the next time the Claude desktop app launches.
+    var dismissed = false
 
     init() {
         let size = Prefs.collapsed ? COLLAPSED : EXPANDED
@@ -556,6 +574,12 @@ final class HUDPanel: NSPanel {
         hud.needsDisplay = true
     }
 
+    func dismiss() {
+        dismissed = true
+        hud.tooltip.hide()
+        orderOut(nil)
+    }
+
     func refreshNow() {
         guard !hud.refreshing else { return }
         hud.refreshing = true
@@ -588,7 +612,7 @@ let CLAUDE_APP = "com.anthropic.claudefordesktop"
 
 func followClaude() {
     let running = !NSRunningApplication.runningApplications(withBundleIdentifier: CLAUDE_APP).isEmpty
-    if running {
+    if running && !panel.dismissed {
         panel.refresh()
         panel.orderFrontRegardless()
     } else {
@@ -600,7 +624,10 @@ func followClaude() {
 for name in [NSWorkspace.didLaunchApplicationNotification, NSWorkspace.didTerminateApplicationNotification] {
     NSWorkspace.shared.notificationCenter.addObserver(forName: name, object: nil, queue: .main) { note in
         let changed = note.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication
-        if changed?.bundleIdentifier == CLAUDE_APP { followClaude() }
+        guard changed?.bundleIdentifier == CLAUDE_APP else { return }
+        // A fresh launch brings back a HUD that was closed.
+        if note.name == NSWorkspace.didLaunchApplicationNotification { panel.dismissed = false }
+        followClaude()
     }
 }
 followClaude()

@@ -56,7 +56,8 @@ The band adapts to width: bars shrink on narrow windows, token counts drop off u
 - **Follows the Claude desktop app:** it appears when the app opens and hides when it quits. It starts at login and waits in the background in between
 - **Refresh button** (bottom right) pulls a fresh reading. The footer says how old the current one is and turns amber after 15 minutes
 - **Minimize / maximize button** collapses it into a small pill and back. The pill keeps both buttons, and a click anywhere else on the panel toggles too
-- **Hover** either icon for a tooltip saying what it does
+- **Close button** hides the HUD until the next time you open the Claude desktop app
+- **Hover** any icon for a tooltip saying what it does
 - **Drag** to park it anywhere; it remembers the spot
 - **Right-click** for Refresh now (⌘R), Theme, Block bars, and Quit
 - The border glows in the theme's hot color once either limit passes 90%
