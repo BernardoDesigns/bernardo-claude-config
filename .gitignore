@@ -9,3 +9,12 @@ ccusage-*.json
 
 # setup.sh backups
 *.bak.*
+
+# Secrets. Nothing secret-shaped should ever land in a public config repo.
+.env
+.env.*
+*.pem
+*.key
+*.p12
+id_rsa*
+id_ed25519*

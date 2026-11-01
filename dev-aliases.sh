@@ -13,6 +13,23 @@
 # The tunnel is launched detached (nohup + disown) so the Claude Code session
 # can't signal it, and teardown is PID-tracked so we never blanket-kill a tunnel
 # belonging to another project.
+#
+# Static mode never serves dotfiles (.git, .env, .DS_Store...): any path with a
+# segment starting with "." gets a 404. It also refuses to run in $HOME or in a
+# folder holding a .env / .env.* file, since the tunnel makes it all public.
+
+# Bound to loopback; the tunnel is the only way in from outside.
+_DEV_STATIC_PY='
+import http.server, sys, urllib.parse
+class H(http.server.SimpleHTTPRequestHandler):
+    def send_head(self):
+        path = urllib.parse.unquote(urllib.parse.urlsplit(self.path).path)
+        if any(s.startswith(".") for s in path.replace("\\", "/").split("/")):
+            self.send_error(404)
+            return None
+        return super().send_head()
+http.server.ThreadingHTTPServer(("127.0.0.1", int(sys.argv[1])), H).serve_forever()
+'
 
 _dev_detect() {
   local port kind script
@@ -51,12 +68,17 @@ devup() {
     echo "$!" >> "$pidfile"
     echo "npm dev server booting on :$port"
   else
+    if [ "$(pwd -P)" = "$(cd "$HOME" && pwd -P)" ]; then
+      echo "refusing to serve \$HOME publicly. cd into the project folder first"; return 1
+    fi
+    if ls -A | grep -qE '^\.env(\.|$)'; then
+      echo "refusing to serve a folder with a .env file in it. move it out first"; return 1
+    fi
+    # -I keeps a stray http.py etc. in the served folder from being imported
     if command -v python3 >/dev/null 2>&1; then
-      python3 -m http.server "$port" > "$srvlog" 2>&1 &
-    elif command -v npx >/dev/null 2>&1; then
-      npx --yes http-server -p "$port" -c-1 . > "$srvlog" 2>&1 &
+      python3 -I -c "$_DEV_STATIC_PY" "$port" > "$srvlog" 2>&1 &
     else
-      echo "need python3 or node to serve static files"; return 1
+      echo "need python3 to serve static files"; return 1
     fi
     echo "$!" >> "$pidfile"
     echo "static server booting on :$port (serving $(pwd))"
