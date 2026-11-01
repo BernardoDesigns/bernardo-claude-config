@@ -53,6 +53,7 @@ The band adapts to width: bars shrink on narrow windows, token counts drop off u
 
 **HUD (on your desktop)**
 
+- **Follows the Claude desktop app:** it appears when the app opens and hides when it quits. It starts at login and waits in the background in between
 - **Refresh button** (bottom right) pulls a fresh reading. The footer says how old the current one is and turns amber after 15 minutes
 - **Minimize / maximize button** collapses it into a small pill and back. A click anywhere else on the panel does the same
 - **Drag** to park it anywhere; it remembers the spot

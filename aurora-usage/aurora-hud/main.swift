@@ -11,7 +11,8 @@
 // single tiny request, so a fresh reading lands in the file (see Refresher).
 //
 // Build:  swiftc -O main.swift -o AuroraHUD      (needs Xcode Command Line Tools)
-// Use:    click to collapse/expand, click ↻ to refresh, drag to move,
+// Use:    shows while the Claude desktop app is open, hides when it quits.
+//         Click to collapse/expand, click ↻ to refresh, drag to move,
 //         right-click for Refresh, themes and Quit.
 
 import AppKit
@@ -505,7 +506,29 @@ let app = NSApplication.shared
 app.setActivationPolicy(.accessory) // no Dock icon
 let panel = HUDPanel()
 panel.refresh()
-panel.orderFrontRegardless()
+
+// The panel shows only while the Claude desktop app is running. macOS posts
+// launch and quit notifications, so there's no polling; while hidden the HUD
+// just sits idle.
+let CLAUDE_APP = "com.anthropic.claudefordesktop"
+
+func followClaude() {
+    let running = !NSRunningApplication.runningApplications(withBundleIdentifier: CLAUDE_APP).isEmpty
+    if running {
+        panel.refresh()
+        panel.orderFrontRegardless()
+    } else {
+        panel.orderOut(nil)
+    }
+}
+
+for name in [NSWorkspace.didLaunchApplicationNotification, NSWorkspace.didTerminateApplicationNotification] {
+    NSWorkspace.shared.notificationCenter.addObserver(forName: name, object: nil, queue: .main) { note in
+        let changed = note.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication
+        if changed?.bundleIdentifier == CLAUDE_APP { followClaude() }
+    }
+}
+followClaude()
 
 // The mod writes after every Claude Code response; checking every 30s keeps
 // countdowns and the "Updated" age fresh.
