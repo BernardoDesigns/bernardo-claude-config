@@ -15,8 +15,8 @@
 # belonging to another project.
 #
 # Static mode never serves dotfiles (.git, .env, .DS_Store...): any path with a
-# segment starting with "." gets a 404. It also refuses to run in $HOME or in a
-# folder holding a .env / .env.* file, since the tunnel makes it all public.
+# segment starting with "." gets a 404. It refuses to run in $HOME, and warns
+# (without blocking) when the folder holds a .env / .env.* file.
 
 # Bound to loopback; the tunnel is the only way in from outside.
 _DEV_STATIC_PY='
@@ -71,9 +71,6 @@ devup() {
     if [ "$(pwd -P)" = "$(cd "$HOME" && pwd -P)" ]; then
       echo "refusing to serve \$HOME publicly. cd into the project folder first"; return 1
     fi
-    if ls -A | grep -qE '^\.env(\.|$)'; then
-      echo "refusing to serve a folder with a .env file in it. move it out first"; return 1
-    fi
     # -I keeps a stray http.py etc. in the served folder from being imported
     if command -v python3 >/dev/null 2>&1; then
       python3 -I -c "$_DEV_STATIC_PY" "$port" > "$srvlog" 2>&1 &
@@ -83,6 +80,8 @@ devup() {
     echo "$!" >> "$pidfile"
     echo "static server booting on :$port (serving $(pwd))"
     [ -f index.html ] || echo "  heads up: no index.html here — are you in the right folder?"
+    # dotfiles 404 at the handler, so this is just a nudge, not a block
+    ls -A | grep -qE '^\.env(\.|$)' && echo "  heads up: .env file here. it's blocked from the tunnel, but everything else in this folder is public"
   fi
 
   # --- wait for the server to actually answer (max ~30s) ---
@@ -194,7 +193,12 @@ tunnel() {
 # you're still working.
 cc() {
   local port; port="$(_dev_detect | awk '{print $1}')"
-  devup "$port"
-  claude "$@"
-  devdown "$port"
+  if devup "$port"; then
+    claude "$@"
+    devdown "$port"
+  else
+    echo "no preview this time, launching Claude only"
+    claude "$@"
+    devdown "$port" >/dev/null  # sweep anything devup half-started
+  fi
 }

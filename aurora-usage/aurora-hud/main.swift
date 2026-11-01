@@ -218,10 +218,65 @@ enum Prefs {
 // MARK: - The panel
 
 let EXPANDED = NSSize(width: 312, height: 82)
-let COLLAPSED = NSSize(width: 180, height: 30)
+let COLLAPSED = NSSize(width: 200, height: 30)
 
-// The icon buttons: refresh (expanded only) and minimize/maximize.
+// The icon buttons, in both sizes: refresh and minimize/maximize.
 enum Control { case refresh, toggle }
+
+// Native tooltips don't show for a panel that never becomes key, so the HUD
+// draws its own: a small label above the hovered button, after the usual delay.
+final class Tooltip {
+    private let panel = NSPanel(contentRect: .zero, styleMask: [.borderless, .nonactivatingPanel],
+                                backing: .buffered, defer: true)
+    private let label = NSTextField(labelWithString: "")
+    private var pending: DispatchWorkItem?
+
+    init() {
+        panel.level = .statusBar
+        panel.backgroundColor = .clear
+        panel.isOpaque = false
+        panel.hasShadow = true
+        panel.ignoresMouseEvents = true
+        panel.collectionBehavior = [.canJoinAllSpaces, .stationary, .fullScreenAuxiliary]
+        let box = NSView()
+        box.wantsLayer = true
+        box.layer?.backgroundColor = color("#2a2e36", 0.97).cgColor
+        box.layer?.cornerRadius = 6
+        box.layer?.borderWidth = 1
+        box.layer?.borderColor = NSColor.white.withAlphaComponent(0.08).cgColor
+        label.font = .systemFont(ofSize: 11)
+        label.textColor = color("#d6d9de")
+        box.addSubview(label)
+        panel.contentView = box
+    }
+
+    // `anchor` is the button's rect in screen coordinates. Sits above it, or
+    // below when the HUD is parked at the top of the screen.
+    func show(_ text: String, at anchor: NSRect) {
+        pending?.cancel()
+        let work = DispatchWorkItem { [self] in
+            label.stringValue = text
+            label.sizeToFit()
+            label.setFrameOrigin(NSPoint(x: 8, y: 4))
+            let size = NSSize(width: label.frame.width + 16, height: label.frame.height + 8)
+            var origin = NSPoint(x: anchor.midX - size.width / 2, y: anchor.maxY + 6)
+            if let screen = NSScreen.screens.first(where: { $0.frame.intersects(anchor) })?.visibleFrame {
+                origin.x = min(max(origin.x, screen.minX + 4), screen.maxX - size.width - 4)
+                if origin.y + size.height > screen.maxY { origin.y = anchor.minY - size.height - 6 }
+            }
+            panel.setFrame(NSRect(origin: origin, size: size), display: true)
+            panel.orderFrontRegardless()
+        }
+        pending = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5, execute: work)
+    }
+
+    func hide() {
+        pending?.cancel()
+        pending = nil
+        panel.orderOut(nil)
+    }
+}
 
 final class HUDView: NSView {
     var usage = Usage()
@@ -229,8 +284,21 @@ final class HUDView: NSView {
     var refreshFailed = false
     private var dragged = false
     private var hovered: Control?
+    let tooltip = Tooltip()
 
-    private var controls: [Control] { Prefs.collapsed ? [.toggle] : [.refresh, .toggle] }
+    private let controls: [Control] = [.refresh, .toggle]
+
+    private func tip(_ c: Control) -> String {
+        switch c {
+        case .refresh: return refreshing ? "Refreshing…" : "Refresh now · uses one small request"
+        case .toggle: return Prefs.collapsed ? "Expand" : "Minimize"
+        }
+    }
+
+    private func showTip(_ c: Control) {
+        guard let window = window else { return }
+        tooltip.show(tip(c), at: window.convertToScreen(convert(rect(c), to: nil)))
+    }
 
     // 24pt hit targets in the bottom-right corner, toggle outermost.
     private func rect(_ c: Control) -> NSRect {
@@ -368,9 +436,9 @@ final class HUDView: NSView {
 
     // Buttons act, a click elsewhere toggles too, drag moves.
     override func mouseDown(with e: NSEvent) { dragged = false }
-    override func mouseDragged(with e: NSEvent) { dragged = true; window?.performDrag(with: e) }
     override func mouseUp(with e: NSEvent) {
         guard !dragged else { return }
+        tooltip.hide()
         if control(at: convert(e.locationInWindow, from: nil)) == .refresh {
             (window as? HUDPanel)?.refreshNow()
             return
@@ -390,12 +458,18 @@ final class HUDView: NSView {
 
     override func mouseMoved(with e: NSEvent) {
         let now = control(at: convert(e.locationInWindow, from: nil))
-        if now != hovered { hovered = now; needsDisplay = true }
+        guard now != hovered else { return }
+        hovered = now
+        needsDisplay = true
+        if let c = now { showTip(c) } else { tooltip.hide() }
     }
 
     override func mouseExited(with e: NSEvent) {
+        tooltip.hide()
         if hovered != nil { hovered = nil; needsDisplay = true }
     }
+
+    override func mouseDragged(with e: NSEvent) { tooltip.hide(); dragged = true; window?.performDrag(with: e) }
 
     override func menu(for event: NSEvent) -> NSMenu? {
         let menu = NSMenu()
@@ -518,6 +592,7 @@ func followClaude() {
         panel.refresh()
         panel.orderFrontRegardless()
     } else {
+        panel.hud.tooltip.hide()
         panel.orderOut(nil)
     }
 }
