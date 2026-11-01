@@ -1,14 +1,18 @@
 // Aurora HUD: a floating usage panel for the Claude desktop app.
 //
-// What it does: reads ~/Library/Application Support/Claude/plan-usage-history.json
-// (a file the Claude desktop app writes itself, about every 5 minutes) and draws
-// your 5-hour and weekly plan usage in an always-on-top panel.
+// What it does: reads ~/.claude/aurora-usage.json (written by the aurora-billboard
+// mod after every Claude Code response) and draws your 5-hour and weekly plan
+// usage in an always-on-top panel. The limits are account-wide, so they include
+// your Chat usage as of the last reading.
 //
-// What it never does: no network calls, no Keychain or login token, no auto-update,
-// no third-party code. Everything below is AppKit and Foundation from Apple.
+// What it never does: no network calls of its own, no Keychain or login token, no
+// auto-update, no third-party code. Everything below is AppKit and Foundation.
+// The one exception you trigger yourself: Refresh launches the claude CLI for a
+// single tiny request, so a fresh reading lands in the file (see Refresher).
 //
 // Build:  swiftc -O main.swift -o AuroraHUD      (needs Xcode Command Line Tools)
-// Use:    click to collapse/expand, drag to move, right-click for themes and Quit.
+// Use:    click to collapse/expand, click ↻ to refresh, drag to move,
+//         right-click for Refresh, themes and Quit.
 
 import AppKit
 
@@ -54,7 +58,31 @@ func spectrum(_ th: Theme, _ t: CGFloat) -> NSColor {
     return x < 0.5 ? mix(th.ok, th.warn, x * 2) : mix(th.warn, th.hot, (x - 0.5) * 2)
 }
 
-// MARK: - Reading the desktop app's usage file
+// MARK: - The shared usage file
+
+let SHARED_URL = FileManager.default.homeDirectoryForCurrentUser
+    .appendingPathComponent(".claude/aurora-usage.json")
+
+// Same keys as Shared in aurora-billboard/types/index.d.ts.
+enum SharedFile {
+    static func read() -> [String: Any] {
+        guard let data = try? Data(contentsOf: SHARED_URL),
+              let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return [:] }
+        return root
+    }
+
+    // Merge one key in, keeping everything the mod wrote.
+    static func set(_ key: String, _ value: Any) {
+        var root = read()
+        root[key] = value
+        root["v"] = 1
+        guard let data = try? JSONSerialization.data(withJSONObject: root, options: [.prettyPrinted, .sortedKeys])
+        else { return }
+        try? FileManager.default.createDirectory(at: SHARED_URL.deletingLastPathComponent(),
+                                                 withIntermediateDirectories: true)
+        try? data.write(to: SHARED_URL, options: .atomic)
+    }
+}
 
 struct Usage {
     var fiveHour: Double?
@@ -67,57 +95,81 @@ struct Usage {
 }
 
 enum UsageReader {
-    static let url = FileManager.default.homeDirectoryForCurrentUser
-        .appendingPathComponent("Library/Application Support/Claude/plan-usage-history.json")
-    static let fiveHours: TimeInterval = 5 * 3600
-    static let sevenDays: TimeInterval = 7 * 24 * 3600
-    static let resetDrop = 15.0 // a fall of 15+ points between samples means the window reset
-
     static func num(_ any: Any?) -> Double? {
         if let d = any as? Double { return d }
         if let n = any as? NSNumber { return n.doubleValue }
         return nil
     }
 
+    static func date(_ s: String?) -> Date? {
+        guard let s = s else { return nil }
+        let f = ISO8601DateFormatter()
+        f.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return f.date(from: s) ?? ISO8601DateFormatter().date(from: s)
+    }
+
     static func read(now: Date = Date()) -> Usage {
-        guard let data = try? Data(contentsOf: url) else {
-            return Usage(problem: "Open the Claude desktop app to start tracking")
-        }
-        guard let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let all = root["samples"] as? [[String: Any]], let last = all.last else {
-            return Usage(problem: "Usage file has an unexpected format")
-        }
-        // Only the current organization's samples, in case you switch accounts.
-        let org = last["org"] as? String
-        let samples = all.filter { ($0["org"] as? String) == org }
-
-        func value(_ s: [String: Any], _ key: String) -> Double? { num((s["u"] as? [String: Any])?[key]) }
-        func stamp(_ s: [String: Any]) -> Double? { num(s["t"]) }
-
-        func countdown(_ key: String, _ window: TimeInterval) -> TimeInterval? {
-            var lastReset: Double?
-            if samples.count > 1 {
-                for i in 1..<samples.count {
-                    if let a = value(samples[i - 1], key), let b = value(samples[i], key), a - b >= resetDrop {
-                        lastReset = stamp(samples[i])
-                    }
-                }
-            }
-            guard let ms = lastReset else { return nil }
-            var left = ms / 1000 + window - now.timeIntervalSince1970
-            while left < 0 { left += window }
-            return left
+        let root = SharedFile.read()
+        guard let stamp = num(root["updatedAt"]) else {
+            return Usage(problem: "No reading yet · click ↻ to refresh")
         }
 
-        let newest = samples.last ?? last
+        // A window whose reset time has passed is back to zero (same rule as the band).
+        func window(_ key: String) -> (Double?, TimeInterval?) {
+            guard let w = root[key] as? [String: Any], let pct = num(w["percent"]) else { return (nil, nil) }
+            guard let at = date(w["resetsAt"] as? String) else { return (pct, nil) }
+            let left = at.timeIntervalSince(now)
+            return left <= 0 ? (0, nil) : (pct, left)
+        }
+
+        let (fh, fhReset) = window("fiveHour")
+        let (sd, sdReset) = window("sevenDay")
         return Usage(
-            fiveHour: value(newest, "fh"),
-            sevenDay: value(newest, "sd"),
-            fiveHourReset: countdown("fh", fiveHours),
-            sevenDayReset: countdown("sd", sevenDays),
-            sampleAge: stamp(newest).map { now.timeIntervalSince1970 - $0 / 1000 },
+            fiveHour: fh,
+            sevenDay: sd,
+            fiveHourReset: fhReset,
+            sevenDayReset: sdReset,
+            sampleAge: now.timeIntervalSince1970 - stamp / 1000,
             problem: nil
         )
+    }
+}
+
+// MARK: - Refresh on click
+
+// The HUD makes no network calls of its own. Refresh launches the claude CLI for
+// one tiny Haiku turn (no tools, no MCP servers, nothing saved), and the
+// aurora-billboard mod inside it writes the fresh limits to the shared file.
+// That's one request toward your plan, so it only ever runs when you click.
+enum Refresher {
+    static var running: Process?
+
+    static func claudePath() -> String? {
+        let home = FileManager.default.homeDirectoryForCurrentUser.path
+        return ["\(home)/.local/bin/claude", "/opt/homebrew/bin/claude", "/usr/local/bin/claude"]
+            .first { FileManager.default.isExecutableFile(atPath: $0) }
+    }
+
+    static func run(done: @escaping (Bool) -> Void) -> Bool {
+        guard running == nil, let bin = claudePath() else { return false }
+        let p = Process()
+        p.executableURL = URL(fileURLWithPath: bin)
+        p.arguments = ["-p", "Reply with OK.", "--model", "haiku", "--tools", "",
+                       "--strict-mcp-config", "--no-session-persistence"]
+        p.currentDirectoryURL = FileManager.default.temporaryDirectory
+        p.standardInput = FileHandle.nullDevice
+        p.standardOutput = FileHandle.nullDevice
+        p.standardError = FileHandle.nullDevice
+        p.terminationHandler = { proc in
+            DispatchQueue.main.async {
+                running = nil
+                done(proc.terminationStatus == 0)
+            }
+        }
+        do { try p.run() } catch { return false }
+        running = p
+        DispatchQueue.main.asyncAfter(deadline: .now() + 90) { if p.isRunning { p.terminate() } }
+        return true
     }
 }
 
@@ -132,15 +184,29 @@ func duration(_ s: TimeInterval?) -> String {
 
 // MARK: - Preferences
 
+// Theme and bar style live in the shared file, so the HUD and the band always
+// match; UserDefaults is the fallback before the file exists.
 enum Prefs {
     static let d = UserDefaults.standard
     static var theme: Theme {
-        get { THEMES.first { $0.name == d.string(forKey: "theme") } ?? THEMES[0] }
-        set { d.set(newValue.name, forKey: "theme") }
+        get {
+            let name = (SharedFile.read()["theme"] as? String) ?? d.string(forKey: "theme")
+            return THEMES.first { $0.name == name } ?? THEMES[0]
+        }
+        set {
+            d.set(newValue.name, forKey: "theme")
+            SharedFile.set("theme", newValue.name)
+        }
     }
     static var blockBars: Bool {
-        get { d.bool(forKey: "blockBars") }
-        set { d.set(newValue, forKey: "blockBars") }
+        get {
+            if let glyph = SharedFile.read()["glyph"] as? String { return glyph == "block" }
+            return d.bool(forKey: "blockBars")
+        }
+        set {
+            d.set(newValue, forKey: "blockBars")
+            SharedFile.set("glyph", newValue ? "block" : "thin")
+        }
     }
     static var collapsed: Bool {
         get { d.bool(forKey: "collapsed") }
@@ -150,12 +216,30 @@ enum Prefs {
 
 // MARK: - The panel
 
-let EXPANDED = NSSize(width: 312, height: 76)
-let COLLAPSED = NSSize(width: 168, height: 30)
+let EXPANDED = NSSize(width: 312, height: 82)
+let COLLAPSED = NSSize(width: 180, height: 30)
+
+// The icon buttons: refresh (expanded only) and minimize/maximize.
+enum Control { case refresh, toggle }
 
 final class HUDView: NSView {
     var usage = Usage()
+    var refreshing = false
+    var refreshFailed = false
     private var dragged = false
+    private var hovered: Control?
+
+    private var controls: [Control] { Prefs.collapsed ? [.toggle] : [.refresh, .toggle] }
+
+    // 24pt hit targets in the bottom-right corner, toggle outermost.
+    private func rect(_ c: Control) -> NSRect {
+        let size: CGFloat = 24
+        let y = Prefs.collapsed ? (bounds.height - size) / 2 : bounds.height - size - 6
+        let slot: CGFloat = c == .toggle ? 1 : 2
+        return NSRect(x: bounds.width - slot * size - 6 - (slot - 1) * 2, y: y, width: size, height: size)
+    }
+
+    private func control(at p: NSPoint) -> Control? { controls.first { rect($0).contains(p) } }
 
     private let mono = NSFont.monospacedSystemFont(ofSize: 12, weight: .regular)
     private let monoBold = NSFont.monospacedSystemFont(ofSize: 12, weight: .bold)
@@ -180,11 +264,61 @@ final class HUDView: NSView {
         shape.lineWidth = 1
         shape.stroke()
 
-        if let problem = usage.problem {
-            text(problem, color(th.mute)).draw(at: NSPoint(x: 14, y: Prefs.collapsed ? 7 : 29))
-            return
+        if Prefs.collapsed {
+            drawCollapsed(th)
+        } else {
+            if let problem = usage.problem {
+                text(problem, color(th.mute)).draw(at: NSPoint(x: 14, y: 25))
+            } else {
+                drawRow(th, y: 14, label: "5h", pct: usage.fiveHour, reset: usage.fiveHourReset)
+                drawRow(th, y: 36, label: "7d", pct: usage.sevenDay, reset: usage.sevenDayReset)
+            }
+            drawFooter(th)
         }
-        Prefs.collapsed ? drawCollapsed(th) : drawExpanded(th)
+        for c in controls { drawControl(c, th) }
+    }
+
+    private func drawControl(_ c: Control, _ th: Theme) {
+        let r = rect(c)
+        if hovered == c && !(c == .refresh && refreshing) {
+            NSColor.white.withAlphaComponent(0.09).setFill()
+            NSBezierPath(roundedRect: r, xRadius: 6, yRadius: 6).fill()
+        }
+        let name: String
+        switch c {
+        case .refresh: name = "arrow.clockwise"
+        case .toggle: name = Prefs.collapsed ? "arrow.up.left.and.arrow.down.right" : "arrow.down.right.and.arrow.up.left"
+        }
+        let config = NSImage.SymbolConfiguration(pointSize: 13, weight: .semibold)
+        guard let symbol = NSImage(systemSymbolName: name, accessibilityDescription: nil)?
+            .withSymbolConfiguration(config) else { return }
+
+        // Refresh warms to the theme's warn color once the reading is stale, as a nudge.
+        let tint: NSColor
+        if c == .refresh && refreshing { tint = color(th.mute, 0.35) }
+        else if hovered == c { tint = color(th.accent) }
+        else if c == .refresh && usage.isStale { tint = color(th.warn) }
+        else { tint = color(th.mute) }
+
+        let s = symbol.size
+        let tinted = NSImage(size: s, flipped: false) { box in
+            symbol.draw(in: box)
+            tint.set()
+            box.fill(using: .sourceAtop)
+            return true
+        }
+        tinted.draw(in: NSRect(x: r.midX - s.width / 2, y: r.midY - s.height / 2, width: s.width, height: s.height),
+                    from: .zero, operation: .sourceOver, fraction: 1, respectFlipped: true, hints: nil)
+    }
+
+    private func drawFooter(_ th: Theme) {
+        let foot: String
+        if refreshing { foot = "Refreshing…" }
+        else if refreshFailed { foot = "Refresh didn't finish · try again" }
+        else if let age = usage.sampleAge { foot = age < 60 ? "Updated just now" : "Updated \(duration(age)) ago" }
+        else { foot = "" }
+        let stale = usage.isStale && !refreshing
+        text(foot, stale ? color(th.warn, 0.9) : color(th.mute, 0.7)).draw(at: NSPoint(x: 14, y: 57))
     }
 
     private func drawCollapsed(_ th: Theme) {
@@ -194,13 +328,6 @@ final class HUDView: NSView {
             let p = text(pct.map { "\(Int($0.rounded()))%" } ?? "–", spectrum(th, CGFloat((pct ?? 0) / 100)), bold: true)
             p.draw(at: NSPoint(x: x, y: 7)); x += p.size().width
         }
-    }
-
-    private func drawExpanded(_ th: Theme) {
-        drawRow(th, y: 14, label: "5h", pct: usage.fiveHour, reset: usage.fiveHourReset)
-        drawRow(th, y: 36, label: "7d", pct: usage.sevenDay, reset: usage.sevenDayReset)
-        let foot = usage.isStale ? "Last reading \(duration(usage.sampleAge)) ago" : "Plan usage · Claude desktop"
-        text(foot, color(th.mute, 0.7)).draw(at: NSPoint(x: 14, y: 57))
     }
 
     private func drawRow(_ th: Theme, y: CGFloat, label: String, pct: Double?, reset: TimeInterval?) {
@@ -238,17 +365,45 @@ final class HUDView: NSView {
         text("⏰\(duration(reset))", color(th.mute)).draw(at: NSPoint(x: barX + barW + 50, y: y))
     }
 
-    // Click toggles, drag moves.
+    // Buttons act, a click elsewhere toggles too, drag moves.
     override func mouseDown(with e: NSEvent) { dragged = false }
     override func mouseDragged(with e: NSEvent) { dragged = true; window?.performDrag(with: e) }
     override func mouseUp(with e: NSEvent) {
         guard !dragged else { return }
+        if control(at: convert(e.locationInWindow, from: nil)) == .refresh {
+            (window as? HUDPanel)?.refreshNow()
+            return
+        }
+        hovered = nil
         Prefs.collapsed.toggle()
         (window as? HUDPanel)?.applySize()
     }
 
+    // Hover highlights a button. activeAlways, since the panel never becomes key.
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        trackingAreas.forEach(removeTrackingArea)
+        addTrackingArea(NSTrackingArea(rect: bounds, options: [.mouseMoved, .mouseEnteredAndExited, .activeAlways],
+                                       owner: self, userInfo: nil))
+    }
+
+    override func mouseMoved(with e: NSEvent) {
+        let now = control(at: convert(e.locationInWindow, from: nil))
+        if now != hovered { hovered = now; needsDisplay = true }
+    }
+
+    override func mouseExited(with e: NSEvent) {
+        if hovered != nil { hovered = nil; needsDisplay = true }
+    }
+
     override func menu(for event: NSEvent) -> NSMenu? {
         let menu = NSMenu()
+        let refresh = NSMenuItem(title: refreshing ? "Refreshing…" : "Refresh now",
+                                 action: refreshing ? nil : #selector(refreshNow), keyEquivalent: "r")
+        refresh.target = self
+        menu.addItem(refresh)
+        menu.addItem(.separator())
+
         let themeItem = NSMenuItem(title: "Theme", action: nil, keyEquivalent: "")
         let sub = NSMenu()
         for th in THEMES {
@@ -279,6 +434,8 @@ final class HUDView: NSView {
             needsDisplay = true
         }
     }
+
+    @objc private func refreshNow() { (window as? HUDPanel)?.refreshNow() }
 
     @objc private func toggleBars() {
         Prefs.blockBars.toggle()
@@ -323,6 +480,23 @@ final class HUDPanel: NSPanel {
         hud.usage = UsageReader.read()
         hud.needsDisplay = true
     }
+
+    func refreshNow() {
+        guard !hud.refreshing else { return }
+        hud.refreshing = true
+        hud.refreshFailed = false
+        hud.needsDisplay = true
+        let started = Refresher.run { ok in
+            self.hud.refreshing = false
+            self.hud.refreshFailed = !ok
+            self.refresh()
+        }
+        if !started {
+            hud.refreshing = false
+            hud.refreshFailed = true
+            hud.needsDisplay = true
+        }
+    }
 }
 
 // MARK: - App
@@ -333,7 +507,8 @@ let panel = HUDPanel()
 panel.refresh()
 panel.orderFrontRegardless()
 
-// The desktop app samples every ~5 minutes; checking every 30s keeps countdowns fresh.
+// The mod writes after every Claude Code response; checking every 30s keeps
+// countdowns and the "Updated" age fresh.
 let timer = Timer(timeInterval: 30, repeats: true) { _ in panel.refresh() }
 RunLoop.main.add(timer, forMode: .common)
 

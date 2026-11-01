@@ -79,7 +79,7 @@ Two gauges on one fuel tank, so I always know how much of my Max plan is left. D
 - `⚡ using credits` appears when a window passes 100%, and a window drops back to 0% the moment its reset time passes.
 - Toasts at 80% and 95%, once per window.
 
-**The HUD** (in progress) is a small native macOS panel that floats over everything, so the same 5h and 7d bars are visible while I'm in Chat or Projects. One Swift file, AppKit only. It's waiting on a data source that tracks Chat usage too, so `setup.sh` skips it for now.
+**The HUD** is a small native macOS panel that floats over everything, so the same 5h and 7d bars are visible while I'm in Chat or Projects. One Swift file, AppKit only. The billboard writes each reading to a small shared file and the HUD reads it, so the two always agree. A refresh button pulls a fresh reading on demand, which covers Chat-only stretches.
 
 Neither piece makes a network call, reads a login token, or pulls in third-party code. I built this instead of installing a usage bar that read my credentials and auto-updated itself.
 
@@ -100,7 +100,7 @@ Then open a new terminal. `setup.sh`:
 - symlinks `~/.claude/commands` and `~/.dev-aliases.sh` to the repo copies
 - adds a source line to `.zshrc`
 - adds the Aurora billboard to `env.CLAUDE_CODE_PLUGIN_DIRS` in `~/.claude/settings.json` without touching any other key, and removes the old `statusLine` entry if it's still there
-- builds the Aurora HUD and starts it at login, once it's ready (on hold for now; skip it later with `bash setup.sh --no-hud`)
+- builds the Aurora HUD and starts it at login (skip with `bash setup.sh --no-hud`)
 - backs up any existing file it would replace (timestamped), and is safe to re-run
 
 ## Keeping machines in sync
@@ -116,5 +116,5 @@ The repo is the single source of truth. Everything is symlinked or loaded straig
 | `commands/rand.md` | Brand design specialist |
 | `dev-aliases.sh` | `cc`, `devup`, `devdown` |
 | `aurora-usage/aurora-billboard/` | Usage billboard mod for Claude Code |
-| `aurora-usage/aurora-hud/` | Floating usage HUD for macOS (`main.swift` + build scripts), in progress |
+| `aurora-usage/aurora-hud/` | Floating usage HUD for macOS (`main.swift` + build scripts) |
 | `setup.sh` | Idempotent installer |

@@ -25,7 +25,19 @@ const USAGE = {
   cost: { usd: 1.42 },
 }
 
-function stubEngine(on: any, usage: any = USAGE) {
+const SHARED = '/home/test/.claude/aurora-usage.json'
+
+// files stands in for the disk; a missing path rejects the read like ENOENT.
+function stubEngine(on: any, usage: any = USAGE, files: Record<string, string> = {}) {
+  on('env.get', () => ({ value: '/home/test' }))
+  on('fs.read', (_: unknown, e: any) => {
+    if (files[e.path] === undefined) throw new Error('ENOENT')
+    return { value: files[e.path] }
+  })
+  on('fs.write', (_: unknown, e: any) => {
+    files[e.path] = e.text
+    return { value: undefined }
+  })
   on('command.register', () => ({ value: { command: 'billboard' } }))
   on('store.get', () => ({ value: undefined }))
   on('store.set', () => ({ value: undefined }))
@@ -98,4 +110,34 @@ test('a maxed window flags credits', async ($, on) => {
   const ui = await $.ui.mount({ ...BAND, surface: 'terminal' })
   expect((await ui.find({ type: 'Text', text: /⚡ using credits/ }))).toBeTruthy()
   await ui.unmount()
+})
+
+test('the reading and the theme land in the shared file for the HUD', async ($, on) => {
+  const files: Record<string, string> = {}
+  stubEngine(on, USAGE, files)
+  await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
+
+  const first = JSON.parse(files[SHARED]!)
+  expect(first.fiveHour.percent).toBe(31)
+  expect(first.sevenDay.percent).toBe(64)
+  expect(typeof first.updatedAt).toBe('number')
+
+  await $.command.run({ command: 'billboard', args: 'theme tide' } as any)
+  const after = JSON.parse(files[SHARED]!)
+  expect(after.theme).toBe('tide')
+  expect(after.fiveHour.percent).toBe(31)
+})
+
+test('a session with no reading leaves the last one alone', async ($, on) => {
+  const files = { [SHARED]: JSON.stringify({ v: 1, updatedAt: 1, fiveHour: { percent: 50 }, sevenDay: null }) }
+  stubEngine(on, { ...USAGE, rateLimits: [] }, files)
+  await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
+  expect(JSON.parse(files[SHARED]!).fiveHour.percent).toBe(50)
+})
+
+test('a theme picked in the HUD carries into the band', async ($, on) => {
+  stubEngine(on, USAGE, { [SHARED]: JSON.stringify({ v: 1, theme: 'ember' }) })
+  await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
+  const list = await $.command.run({ command: 'billboard', args: '' } as any)
+  expect(list.text).toContain('current: ember')
 })

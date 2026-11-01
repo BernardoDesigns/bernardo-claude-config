@@ -20,12 +20,11 @@ Each bar cell is colored by its *position*, so a fuller bar literally reaches fu
 It ships as part of [bernardo-claude-config](../README.md), so the repo's `setup.sh` installs both pieces:
 
 ```bash
-bash setup.sh            # wires the mod into ~/.claude/settings.json
+bash setup.sh            # wires the mod into ~/.claude/settings.json, builds the HUD, starts it at login
+bash setup.sh --no-hud   # same, without the HUD
 ```
 
-Restart Claude Code and the desktop app afterwards.
-
-> **HUD status: in progress.** The file it was written to read (`plan-usage-history.json`) doesn't exist in current versions of the desktop app, so the HUD has no data yet. `main.swift` compiles, but `setup.sh` skips it (`HUD_ENABLED=0`) until it has a source that tracks Chat usage too. Once it's back on, `setup.sh` builds it and starts it at login, and `bash setup.sh --no-hud` skips it.
+Restart Claude Code and the desktop app afterwards. If setup says swiftc is missing, run `xcode-select --install` once and re-run it.
 
 To try the mod for one session without installing anything:
 
@@ -54,28 +53,31 @@ The band adapts to width: bars shrink on narrow windows, token counts drop off u
 
 **HUD (on your desktop)**
 
-- **Click** to collapse into a small pill, click again to expand
+- **Refresh button** (bottom right) pulls a fresh reading. The footer says how old the current one is and turns amber after 15 minutes
+- **Minimize / maximize button** collapses it into a small pill and back. A click anywhere else on the panel does the same
 - **Drag** to park it anywhere; it remembers the spot
-- **Right-click** for Theme, Block bars, and Quit
+- **Right-click** for Refresh now (⌘R), Theme, Block bars, and Quit
 - The border glows in the theme's hot color once either limit passes 90%
+- Theme and bar style are shared with the billboard, so switching either one switches both
 
 ## Good to know
 
-- **The two read different sources.** The billboard gets live numbers straight from Claude Code. The HUD reads a file the Claude desktop app updates about every 5 minutes, so it can trail by a few minutes. Same account limits, slightly different freshness.
-- **HUD countdowns appear after the first reset it sees.** It works out reset times by spotting when usage drops. Until that happens you'll see `⏰–`. Give it one window.
-- **If the HUD says "unexpected format"**, the desktop app changed its file. Ping Claude with that message and it can adapt the parser.
+- **One source for both.** The billboard writes every reading to `~/.claude/aurora-usage.json` and the HUD reads it, so the two always agree.
+- **Chat counts, but only shows up on the next reading.** The 5h and 7d limits are account-wide, so they include everything you do in Chat and Projects. A new reading arrives whenever any Claude Code session gets a response (terminal or Code tab). During a Chat-only stretch, click refresh.
+- **Refresh costs one small request.** It runs `claude -p` once on Haiku with no tools and no MCP servers, and saves no session. That's one request toward your plan, so it only happens when you click, never on a timer.
 - **No context bar in the HUD.** Chat conversations don't expose their length to anything outside the app, so the HUD sticks to the plan limits it can read honestly.
 
 ## What each piece touches (the security bit)
 
 | | Network | Login token | Files | Auto-update |
 | --- | --- | --- | --- | --- |
-| Billboard mod | None | None | None | None |
-| HUD | None | None | Reads one file: `~/Library/Application Support/Claude/plan-usage-history.json` | None |
+| Billboard mod | None | None | Writes one file: `~/.claude/aurora-usage.json` | None |
+| HUD | None of its own (Refresh launches the `claude` CLI, which makes one request) | None | Reads and writes that same file | None |
 
-The mod only uses Claude Code's own `$.session.usage()` and remembers your theme with its built-in store. The HUD is plain AppKit, no third-party code. Every line is yours to read.
+The mod only uses Claude Code's own `$.session.usage()` and its file API. The shared file holds percentages, reset times, a timestamp, and the theme: nothing personal, no tokens. The HUD is plain AppKit and Foundation, no third-party code. Every line is yours to read.
 
 ## Uninstall
 
 - **Mod:** remove this folder's `aurora-billboard` path from `env.CLAUDE_CODE_PLUGIN_DIRS` in `~/.claude/settings.json`
 - **HUD:** `aurora-hud/remove.sh` (stops it and removes the login item), then delete `~/Applications/AuroraHUD` if you want it fully gone
+- **Shared file:** delete `~/.claude/aurora-usage.json`

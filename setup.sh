@@ -114,9 +114,9 @@ else
 fi
 
 # --- Aurora HUD: build the floating usage panel and start it at login ---
-# On by default once ready. Skip with: bash setup.sh --no-hud   Undo with: aurora-usage/aurora-hud/remove.sh
-# On hold until the HUD has a data source that tracks Chat too. Set to 1 to turn it back on.
-HUD_ENABLED=0
+# On by default. Skip with: bash setup.sh --no-hud   Undo with: aurora-usage/aurora-hud/remove.sh
+# Set to 0 to take it out of setup entirely.
+HUD_ENABLED=1
 HUD_DIR="$REPO_DIR/aurora-usage/aurora-hud"
 if [ "$HUD_ENABLED" != 1 ]; then
     echo "Skipped Aurora HUD (in progress, see aurora-usage/README.md)"

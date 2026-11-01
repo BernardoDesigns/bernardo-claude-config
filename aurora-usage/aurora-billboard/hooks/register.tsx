@@ -1,7 +1,13 @@
 import { atom, read, update } from 'claude-code'
-import type { Register, SessionRateLimit, SessionContextUsage, SessionCost } from 'claude-code'
+import type {
+  EngineInterface,
+  Register,
+  SessionRateLimit,
+  SessionContextUsage,
+  SessionCost,
+} from 'claude-code'
 
-import type { Limit, Snapshot } from '../types'
+import type { Limit, Shared, Snapshot } from '../types'
 import {
   DEFAULT_THEME,
   THEMES,
@@ -45,6 +51,37 @@ function toSnapshot(
   }
 }
 
+// The floating HUD reads the last reading and the look from this one local
+// file. Read-modify-write, so a session with no reading yet never blanks out
+// another session's numbers. A failure here never touches the band.
+async function sharedPath($: EngineInterface): Promise<string | null> {
+  const home = await $.env.get('HOME')
+  return home ? `${home}/.claude/aurora-usage.json` : null
+}
+
+async function readShared($: EngineInterface): Promise<Shared> {
+  try {
+    const path = await sharedPath($)
+    return path ? (JSON.parse(String(await $.fs.read(path))) as Shared) : {}
+  } catch {
+    return {}
+  }
+}
+
+async function share($: EngineInterface, patch: Shared): Promise<void> {
+  try {
+    const path = await sharedPath($)
+    if (!path) return
+    const next = { ...(await readShared($)), ...patch, v: 1 }
+    await $.fs.write(path, JSON.stringify(next, null, 2) + '\n')
+  } catch {}
+}
+
+async function shareReading($: EngineInterface, snap: Snapshot): Promise<void> {
+  if (!snap.fiveHour && !snap.sevenDay) return
+  await share($, { updatedAt: await $.clock.now(), fiveHour: snap.fiveHour, sevenDay: snap.sevenDay })
+}
+
 // A window whose reset time has passed is back to zero, even if no response
 // has reported the new reading yet.
 function live(lim: Limit, t: number): Limit {
@@ -56,9 +93,11 @@ export const register: Register = on => {
   const toasted = new Set<string>()
 
   on('session.start', async ($, e, next) => {
-    const saved = await $.store.get('theme')
+    // The shared file wins, so a theme picked in the HUD carries over.
+    const shared = await readShared($)
+    const saved = shared.theme ?? (await $.store.get('theme'))
     if (typeof saved === 'string' && THEMES[saved]) await update($, theme, () => saved)
-    const savedGlyph = await $.store.get('glyph')
+    const savedGlyph = shared.glyph ?? (await $.store.get('glyph'))
     if (savedGlyph === 'thin' || savedGlyph === 'block') await update($, glyph, () => savedGlyph)
 
     await $.command.register({
@@ -68,7 +107,9 @@ export const register: Register = on => {
 
     const ran = await next(e)
     const u = await $.session.usage()
-    await update($, snapshot, () => toSnapshot(u.rateLimits, u.context, u.cost))
+    const first = toSnapshot(u.rateLimits, u.context, u.cost)
+    await update($, snapshot, () => first)
+    await shareReading($, first)
     // Countdowns tick down between turns.
     $.clock.every(60_000, async () => {
       await update($, now, () => Date.now())
@@ -79,6 +120,7 @@ export const register: Register = on => {
   on('session.measure', async ($, e, next) => {
     const snap = toSnapshot(e.rateLimits, e.context, e.cost)
     await update($, snapshot, () => snap)
+    await shareReading($, snap)
 
     for (const [label, lim] of [
       ['5-hour', snap.fiveHour],
@@ -110,11 +152,13 @@ export const register: Register = on => {
       if (!THEMES[value]) return { text: `No theme "${value}". Try: ${names.join(', ')}` }
       await update($, theme, () => value)
       await $.store.set('theme', value)
+      await share($, { theme: value })
       return { text: `Billboard theme: ${THEMES[value]!.label}` }
     }
     if (sub === 'bars' && (value === 'thin' || value === 'block')) {
       await update($, glyph, () => value)
       await $.store.set('glyph', value)
+      await share($, { glyph: value })
       return { text: `Billboard bars: ${value}` }
     }
 
