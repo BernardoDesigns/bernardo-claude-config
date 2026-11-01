@@ -65,48 +65,72 @@ else
     echo "Added source line to $ZSHRC"
 fi
 
-# --- statusline.sh: symlink into ~/.claude + wire settings.json ---
+# --- Retire the old status line (replaced by Aurora Usage) ---
+# Earlier versions linked ~/.claude/statusline.sh to this repo. Remove that
+# link, but leave alone any status line script that isn't ours.
 STATUSLINE_LINK="$CLAUDE_DIR/statusline.sh"
-
-# Back up a real file in the way (timestamped), then clear any stale symlink
-if [ -f "$STATUSLINE_LINK" ] && [ ! -L "$STATUSLINE_LINK" ]; then
-    BACKUP="$STATUSLINE_LINK.bak.$(date +%Y%m%d-%H%M%S)"
-    echo "Backing up existing statusline.sh to $BACKUP"
-    mv "$STATUSLINE_LINK" "$BACKUP"
+if [ -L "$STATUSLINE_LINK" ] && [[ "$(readlink "$STATUSLINE_LINK")" == "$REPO_DIR/"* ]]; then
+    rm "$STATUSLINE_LINK"
+    echo "Removed old status line link $STATUSLINE_LINK"
 fi
-[ -L "$STATUSLINE_LINK" ] && rm "$STATUSLINE_LINK"
-
-# Symlink ~/.claude -> repo copy
-ln -s "$REPO_DIR/statusline.sh" "$STATUSLINE_LINK"
-
-if [ ! -e "$STATUSLINE_LINK" ]; then
-    echo "ERROR: statusline symlink created but target $REPO_DIR/statusline.sh does not exist"
-    exit 1
-fi
-echo "Done! ~/.claude/statusline.sh -> $REPO_DIR/statusline.sh"
 
 # Dependencies: warn loudly instead of failing silently
 if ! command -v jq >/dev/null 2>&1; then
-    echo "WARNING: jq not found. The status line and the settings merge below need it:"
+    echo "WARNING: jq not found. The settings merge below needs it:"
     echo "    brew install jq"
 fi
 
-# Merge statusLine into settings.json, leaving every other key untouched
+# --- Aurora billboard: load the mod from this repo in every session ---
+# Adds this repo's mod folder to env.CLAUDE_CODE_PLUGIN_DIRS (appended, ':'
+# separated, if other folders are already listed) and drops the old statusLine
+# entry only if it still points at our retired script. Every other key stays.
 SETTINGS="$CLAUDE_DIR/settings.json"
+BILLBOARD_DIR="$REPO_DIR/aurora-usage/aurora-billboard"
+OLD_STATUSLINE='{"type":"command","command":"~/.claude/statusline.sh"}'
 if command -v jq >/dev/null 2>&1; then
     [ -s "$SETTINGS" ] || echo '{}' > "$SETTINGS"
-    WANT='{"type":"command","command":"~/.claude/statusline.sh"}'
-    if jq -e --argjson want "$WANT" '.statusLine == $want' "$SETTINGS" >/dev/null 2>&1; then
-        echo "statusLine already set in $SETTINGS, leaving it"
-    elif MERGED=$(jq --argjson want "$WANT" '.statusLine = $want' "$SETTINGS"); then
-        # Write in place (not mv) so a symlinked settings.json stays a symlink
-        printf '%s\n' "$MERGED" > "$SETTINGS"
-        echo "Set statusLine in $SETTINGS"
+    if MERGED=$(jq --arg dir "$BILLBOARD_DIR" --argjson old "$OLD_STATUSLINE" '
+            (.env.CLAUDE_CODE_PLUGIN_DIRS // "") as $cur
+            | .env = ((.env // {}) + {CLAUDE_CODE_PLUGIN_DIRS:
+                (if $cur == "" then $dir
+                 elif ($cur | split(":") | index($dir)) then $cur
+                 else $cur + ":" + $dir end)})
+            | if .statusLine == $old then del(.statusLine) else . end
+        ' "$SETTINGS"); then
+        if [ "$MERGED" = "$(jq . "$SETTINGS")" ]; then
+            echo "Aurora billboard already wired in $SETTINGS, leaving it"
+        else
+            BACKUP="$SETTINGS.bak.$(date +%Y%m%d-%H%M%S)"
+            cp "$SETTINGS" "$BACKUP"
+            # Write in place (not mv) so a symlinked settings.json stays a symlink
+            printf '%s\n' "$MERGED" > "$SETTINGS"
+            echo "Wired Aurora billboard into $SETTINGS (backup: $BACKUP)"
+        fi
     else
         echo "ERROR: $SETTINGS is not valid JSON, left it alone. Fix it and re-run."
     fi
 else
-    echo "Skipped statusLine in $SETTINGS (needs jq)"
+    echo "Skipped Aurora billboard in $SETTINGS (needs jq)"
+fi
+
+# --- Aurora HUD: build the floating usage panel and start it at login ---
+# On by default once ready. Skip with: bash setup.sh --no-hud   Undo with: aurora-usage/aurora-hud/remove.sh
+# On hold until the HUD has a data source that tracks Chat too. Set to 1 to turn it back on.
+HUD_ENABLED=0
+HUD_DIR="$REPO_DIR/aurora-usage/aurora-hud"
+if [ "$HUD_ENABLED" != 1 ]; then
+    echo "Skipped Aurora HUD (in progress, see aurora-usage/README.md)"
+elif [ "${1:-}" = "--no-hud" ]; then
+    echo "Skipped Aurora HUD (--no-hud)"
+elif [ "$(uname)" != "Darwin" ]; then
+    echo "Skipped Aurora HUD (macOS only)"
+elif ! command -v swiftc >/dev/null 2>&1; then
+    echo "WARNING: swiftc not found, so the Aurora HUD wasn't built. Run this once, then re-run setup.sh:"
+    echo "    xcode-select --install"
+elif "$HUD_DIR/build.sh" && "$HUD_DIR/start-at-login.sh"; then
+    echo "Done! Aurora HUD is running and starts at login"
+else
+    echo "WARNING: Aurora HUD build or launch failed. Everything else is set up."
 fi
 
 echo ""
@@ -115,4 +139,4 @@ ls "$COMMANDS_DIR"/*.md 2>/dev/null | while read f; do
     echo "  /$(basename "$f" .md)"
 done
 echo ""
-echo "Restart any running Claude Code sessions to pick up the commands."
+echo "Restart any running Claude Code sessions (and the desktop app) to pick up the commands and the billboard."

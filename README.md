@@ -1,6 +1,6 @@
 # bernardo-claude-config
 
-**My Claude Code setup, version-controlled and synced across machines.** It holds a small team of design agents, a one-command dev environment, and a custom status line. Clone it anywhere, run `setup.sh`, and the whole kit is wired in.
+**My Claude Code setup, version-controlled and synced across machines.** It holds a small team of design agents, a one-command dev environment, and Aurora Usage, a pair of plan-usage gauges. Clone it anywhere, run `setup.sh`, and the whole kit is wired in.
 
 Built by [Bernardo Garcia](https://www.bellwetherdesigns.io), a product designer who builds with AI every day.
 
@@ -64,24 +64,31 @@ cc        # starts the dev server + a Cloudflare tunnel, then launches Claude Co
 
 ---
 
-## Status line
+## Aurora Usage
 
-Two lines at the bottom of every Claude Code session:
+Two gauges on one fuel tank, so I always know how much of my Max plan is left. Details in [`aurora-usage/README.md`](aurora-usage/README.md).
+
+**The billboard** is a Claude Code mod that draws one thin line above the prompt, in the terminal and the desktop app's Code tab:
 
 ```
-Opus 5.5 | session $1.24 | ctx ▓▓▓░░░░░░░ 31%
-session ▓▓▓▓░░░░░░ 42% resets 6:20 PM | week ▓▓░░░░░░░░ 18% resets Tue 2:00 PM
+5h ━━━━━━━━━━━━ 31% ⏰1h38m │ 7d ━━━━━━━━━━━━ 64% ⏰2d15h │ Opus 5.5 ━━━━━━━━━━━━ 42% 420.0k/1.0M │ $1.42
 ```
 
-- **Line 1:** model, session cost, and context window usage. A red `⚡ using credits` flag appears when a usage limit hits 100%.
-- **Line 2:** the 5-hour and 7-day usage windows, color-coded green, yellow, and red.
-- Last known values are cached so a fresh session isn't blank. Cached numbers show a `·` until live data arrives, and expired windows reset to 0%.
+- The 5-hour and 7-day windows with reset countdowns, then the model's context fill and the session cost.
+- Each cell is colored by its position on the bar, so a fuller bar reaches further into the hot end. `/billboard theme aurora|ember|tide|mono` swaps the palette.
+- `⚡ using credits` appears when a window passes 100%, and a window drops back to 0% the moment its reset time passes.
+- Toasts at 80% and 95%, once per window.
+
+**The HUD** (in progress) is a small native macOS panel that floats over everything, so the same 5h and 7d bars are visible while I'm in Chat or Projects. One Swift file, AppKit only. It's waiting on a data source that tracks Chat usage too, so `setup.sh` skips it for now.
+
+Neither piece makes a network call, reads a login token, or pulls in third-party code. I built this instead of installing a usage bar that read my credentials and auto-updated itself.
 
 ---
 
 ## New machine setup
 
 ```bash
+xcode-select --install   # once, for the Aurora HUD's Swift compiler
 brew install cloudflared jq
 git clone https://github.com/BernardoDesigns/bernardo-claude-config.git ~/LocalDev/bernardo-claude-config
 cd ~/LocalDev/bernardo-claude-config
@@ -90,14 +97,15 @@ bash setup.sh
 
 Then open a new terminal. `setup.sh`:
 
-- symlinks `~/.claude/commands`, `~/.claude/statusline.sh`, and `~/.dev-aliases.sh` to the repo copies
+- symlinks `~/.claude/commands` and `~/.dev-aliases.sh` to the repo copies
 - adds a source line to `.zshrc`
-- merges the `statusLine` entry into `~/.claude/settings.json` without touching any other key
+- adds the Aurora billboard to `env.CLAUDE_CODE_PLUGIN_DIRS` in `~/.claude/settings.json` without touching any other key, and removes the old `statusLine` entry if it's still there
+- builds the Aurora HUD and starts it at login, once it's ready (on hold for now; skip it later with `bash setup.sh --no-hud`)
 - backs up any existing file it would replace (timestamped), and is safe to re-run
 
 ## Keeping machines in sync
 
-The repo is the single source of truth. Everything is symlinked, so a `git pull` on any machine picks up changes instantly. Re-run `setup.sh` only on a new machine or when the install logic itself changes.
+The repo is the single source of truth. Everything is symlinked or loaded straight from the repo, so a `git pull` on any machine picks up changes instantly. The HUD is the exception: it's compiled, so re-run `setup.sh` after pulling changes to `main.swift`. Re-run `setup.sh` only on a new machine or when the install logic itself changes.
 
 ## What's in the repo
 
@@ -107,5 +115,6 @@ The repo is the single source of truth. Everything is symlinked, so a `git pull`
 | `commands/eames.md` | Product design specialist |
 | `commands/rand.md` | Brand design specialist |
 | `dev-aliases.sh` | `cc`, `devup`, `devdown` |
-| `statusline.sh` | The two-line status line |
+| `aurora-usage/aurora-billboard/` | Usage billboard mod for Claude Code |
+| `aurora-usage/aurora-hud/` | Floating usage HUD for macOS (`main.swift` + build scripts), in progress |
 | `setup.sh` | Idempotent installer |

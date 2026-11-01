@@ -1,0 +1,10 @@
+{
+  "name": "aurora-billboard",
+  "version": "0.1.0",
+  "description": "Thin-line usage billboard above the prompt: 5h and 7d plan limits, reset countdowns, model and context fill, with a /billboard theme picker",
+  "types": "./types/index.d.ts",
+  "author": {
+    "name": "Bernardo"
+  },
+  "license": "MIT"
+}

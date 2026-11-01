@@ -7,6 +7,10 @@ statusline-limits.json.*
 .cache/
 ccusage-*.json
 
+# Aurora: engine-written mod types and any stray HUD build output
+.claude-plugin/types/
+aurora-usage/aurora-hud/AuroraHUD
+
 # setup.sh backups
 *.bak.*
 
