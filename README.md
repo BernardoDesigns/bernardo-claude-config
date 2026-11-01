@@ -50,17 +50,17 @@ cc        # starts the dev server + a Cloudflare tunnel, then launches Claude Co
 /exit     # quits Claude Code and tears down the server + tunnel
 ```
 
-- The public tunnel URL is copied to the clipboard and announced with a macOS notification, so I can share a live preview right away.
+- The public tunnel URL is copied to the clipboard and opened in the browser, so I can share a live preview right away.
 - Works the same on a fresh start or a resume (`cc --resume`, `cc --continue`).
 - The port is auto-detected from `package.json` (3000 for Next, 5173 for Vite).
 
 | Command | What it does |
 |---|---|
 | `cc` | Launch Claude Code with the dev stack up before and torn down after. Passes args through |
-| `devup [port]` | Start server + tunnel manually (default :5173) |
+| `devup [port]` | Start server + tunnel manually. Port is auto-detected unless you pass one |
 | `devdown [port]` | Kill the server + tunnel on that port. A fallback for orphaned processes |
 
-**Implementation note:** `cc` runs the stack in a subshell with a `trap` on EXIT and HUP. That guarantees teardown however the session ends. Claude Code's session hooks don't fire reliably on resume or quit, so I don't depend on them.
+**Implementation note:** `cc` runs Claude Code in the current shell and calls `devdown` when it returns. No subshell, no `trap`, so teardown fires on `/exit` and nothing can kill the tunnel mid-session. Claude Code's session hooks don't fire reliably on resume or quit, so I don't depend on them.
 
 ---
 
