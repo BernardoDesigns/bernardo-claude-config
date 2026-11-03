@@ -64,7 +64,7 @@ devup() {
   if lsof -i ":$port" >/dev/null 2>&1; then
     echo "something's already on :$port, leaving it be"
   elif [ "$kind" = npm ]; then
-    npm run dev > "$srvlog" 2>&1 &
+    npm run dev < /dev/null > "$srvlog" 2>&1 &
     echo "$!" >> "$pidfile"
     echo "npm dev server booting on :$port"
   else
@@ -73,7 +73,7 @@ devup() {
     fi
     # -I keeps a stray http.py etc. in the served folder from being imported
     if command -v python3 >/dev/null 2>&1; then
-      python3 -I -c "$_DEV_STATIC_PY" "$port" > "$srvlog" 2>&1 &
+      python3 -I -c "$_DEV_STATIC_PY" "$port" < /dev/null > "$srvlog" 2>&1 &
     else
       echo "need python3 to serve static files"; return 1
     fi
