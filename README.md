@@ -106,7 +106,7 @@ Then open a new terminal. `setup.sh`:
 
 - symlinks `~/.claude/commands` and `~/.dev-aliases.sh` to the repo copies
 - adds a source line to `.zshrc`
-- adds the Aurora billboard to `env.CLAUDE_CODE_PLUGIN_DIRS` in `~/.claude/settings.json` without touching any other key, and removes the old `statusLine` entry if it's still there
+- adds the Aurora billboard and Sketchpad to `env.CLAUDE_CODE_PLUGIN_DIRS` in `~/.claude/settings.json` without touching any other key, and removes the old `statusLine` entry if it's still there
 - builds the Aurora HUD and starts it at login (skip with `bash setup.sh --no-hud`)
 - backs up any existing file it would replace (timestamped), and is safe to re-run
 

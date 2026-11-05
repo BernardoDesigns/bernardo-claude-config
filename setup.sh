@@ -80,37 +80,38 @@ if ! command -v jq >/dev/null 2>&1; then
     echo "    brew install jq"
 fi
 
-# --- Aurora billboard: load the mod from this repo in every session ---
-# Adds this repo's mod folder to env.CLAUDE_CODE_PLUGIN_DIRS (appended, ':'
-# separated, if other folders are already listed) and drops the old statusLine
-# entry only if it still points at our retired script. Every other key stays.
+# --- Mods: load the Aurora billboard and Sketchpad from this repo in every session ---
+# Adds each mod folder to env.CLAUDE_CODE_PLUGIN_DIRS (appended, ':' separated,
+# if other folders are already listed) and drops the old statusLine entry only
+# if it still points at our retired script. Every other key stays.
 SETTINGS="$CLAUDE_DIR/settings.json"
 BILLBOARD_DIR="$REPO_DIR/aurora-usage/aurora-billboard"
+SKETCHPAD_DIR="$REPO_DIR/sketchpad"
 OLD_STATUSLINE='{"type":"command","command":"~/.claude/statusline.sh"}'
 if command -v jq >/dev/null 2>&1; then
     [ -s "$SETTINGS" ] || echo '{}' > "$SETTINGS"
-    if MERGED=$(jq --arg dir "$BILLBOARD_DIR" --argjson old "$OLD_STATUSLINE" '
-            (.env.CLAUDE_CODE_PLUGIN_DIRS // "") as $cur
-            | .env = ((.env // {}) + {CLAUDE_CODE_PLUGIN_DIRS:
-                (if $cur == "" then $dir
-                 elif ($cur | split(":") | index($dir)) then $cur
-                 else $cur + ":" + $dir end)})
+    if MERGED=$(jq --arg billboard "$BILLBOARD_DIR" --arg sketchpad "$SKETCHPAD_DIR" --argjson old "$OLD_STATUSLINE" '
+            (reduce ($billboard, $sketchpad) as $dir (.env.CLAUDE_CODE_PLUGIN_DIRS // "";
+                if . == "" then $dir
+                elif (split(":") | index($dir)) then .
+                else . + ":" + $dir end)) as $dirs
+            | .env = ((.env // {}) + {CLAUDE_CODE_PLUGIN_DIRS: $dirs})
             | if .statusLine == $old then del(.statusLine) else . end
         ' "$SETTINGS"); then
         if [ "$MERGED" = "$(jq . "$SETTINGS")" ]; then
-            echo "Aurora billboard already wired in $SETTINGS, leaving it"
+            echo "Mods already wired in $SETTINGS, leaving it"
         else
             BACKUP="$SETTINGS.bak.$(date +%Y%m%d-%H%M%S)"
             cp "$SETTINGS" "$BACKUP"
             # Write in place (not mv) so a symlinked settings.json stays a symlink
             printf '%s\n' "$MERGED" > "$SETTINGS"
-            echo "Wired Aurora billboard into $SETTINGS (backup: $BACKUP)"
+            echo "Wired the Aurora billboard and Sketchpad into $SETTINGS (backup: $BACKUP)"
         fi
     else
         echo "ERROR: $SETTINGS is not valid JSON, left it alone. Fix it and re-run."
     fi
 else
-    echo "Skipped Aurora billboard in $SETTINGS (needs jq)"
+    echo "Skipped the Aurora billboard and Sketchpad in $SETTINGS (needs jq)"
 fi
 
 # --- Aurora HUD: build the floating usage panel and start it at login ---
@@ -139,4 +140,4 @@ ls "$COMMANDS_DIR"/*.md 2>/dev/null | while read f; do
     echo "  /$(basename "$f" .md)"
 done
 echo ""
-echo "Restart any running Claude Code sessions (and the desktop app) to pick up the commands and the billboard."
+echo "Restart any running Claude Code sessions (and the desktop app) to pick up the commands, the billboard and Sketchpad."
