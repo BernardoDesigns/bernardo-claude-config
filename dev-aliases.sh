@@ -17,10 +17,21 @@
 # Static mode never serves dotfiles (.git, .env, .DS_Store...): any path with a
 # segment starting with "." gets a 404. It refuses to run in $HOME, and warns
 # (without blocking) when the folder holds a .env / .env.* file.
+#
+# Loopback has two lines: 127.0.0.1 (IPv4) and ::1 (IPv6), and macOS often
+# resolves "localhost" to ::1 first. The static server answers on both, and the
+# tunnel dials whichever address the server actually answers on, so npm/Vite
+# servers that only listen on one of them work too.
+#
+# Your own browser opens http://localhost:<port>, not the tunnel URL. Chrome
+# asks permission (Local Network Access) whenever a public page calls
+# localhost, and every tunnel is a new random hostname, so it would ask on
+# every launch. The tunnel URL is still copied to the clipboard for sharing.
+# Set DEV_OPEN=tunnel to open the tunnel URL instead, or DEV_OPEN=none.
 
-# Bound to loopback; the tunnel is the only way in from outside.
+# Loopback only (both lines); the tunnel is the only way in from outside.
 _DEV_STATIC_PY='
-import http.server, sys, urllib.parse
+import http.server, socket, sys, threading, urllib.parse
 class H(http.server.SimpleHTTPRequestHandler):
     def send_head(self):
         path = urllib.parse.unquote(urllib.parse.urlsplit(self.path).path)
@@ -28,8 +39,24 @@ class H(http.server.SimpleHTTPRequestHandler):
             self.send_error(404)
             return None
         return super().send_head()
-http.server.ThreadingHTTPServer(("127.0.0.1", int(sys.argv[1])), H).serve_forever()
+class V6(http.server.ThreadingHTTPServer):
+    address_family = socket.AF_INET6
+port = int(sys.argv[1])
+servers = [http.server.ThreadingHTTPServer(("127.0.0.1", port), H)]
+try:
+    servers.append(V6(("::1", port), H))
+except OSError:
+    pass  # no IPv6 on this machine; IPv4 loopback is enough
+for s in servers[1:]:
+    threading.Thread(target=s.serve_forever, daemon=True).start()
+servers[0].serve_forever()
 '
+
+# Matches any cloudflared quick tunnel pointed at this port, whichever loopback
+# spelling it used (older sessions used localhost).
+_dev_cf_pattern() {
+  printf 'cloudflared tunnel.*(localhost|127\\.0\\.0\\.1|\\[::1\\]):%s( |$)' "$1"
+}
 
 _dev_detect() {
   local port kind script
@@ -97,6 +124,16 @@ devup() {
   done
   echo ":$port is live"
 
+  # --- dial the loopback address the server really answers on ---
+  # -g stops curl reading [::1] as a glob pattern
+  local origin="" h
+  for h in 127.0.0.1 "[::1]"; do
+    if curl -sg -o /dev/null --max-time 1 "http://$h:$port"; then
+      origin="http://$h:$port"; break
+    fi
+  done
+  [ -z "$origin" ] && origin="http://localhost:$port"
+
   # --- tunnel ---
   # Only count tunnels THIS devup started (tracked in the pidfile). A stray
   # cloudflared started by something else (e.g. Claude Code) must not suppress
@@ -113,11 +150,11 @@ devup() {
   else
     # warn about foreign tunnels so a stale one doesn't confuse the URL
     local foreign
-    foreign=$(pgrep -f "cloudflared tunnel.*localhost:$port" 2>/dev/null | tr '\n' ' ')
+    foreign=$(pgrep -f "$(_dev_cf_pattern "$port")" 2>/dev/null | tr '\n' ' ')
     [ -n "$foreign" ] && echo "  note: other cloudflared on :$port ($foreign) — run devdown $port to clear"
 
     : > "$cflog"
-    nohup cloudflared tunnel --protocol http2 --url "http://localhost:$port" > "$cflog" 2>&1 & disown
+    nohup cloudflared tunnel --protocol http2 --url "$origin" < /dev/null > "$cflog" 2>&1 & disown
     echo "$!" >> "$pidfile"
   fi
 
@@ -143,9 +180,15 @@ devup() {
   done
 
   printf '%s' "$url" > "$urlfile"
-  echo "public URL:  $url"
+  echo "public URL:  $url  (tunnel -> $origin)"
   command -v pbcopy >/dev/null 2>&1 && printf '%s' "$url" | pbcopy && echo "  (copied to clipboard)"
-  command -v open   >/dev/null 2>&1 && open "$url"
+  if command -v open >/dev/null 2>&1; then
+    case "${DEV_OPEN:-local}" in
+      tunnel) open "$url" ;;
+      none)   ;;
+      *)      open "http://localhost:$port"; echo "  opened localhost:$port (no Chrome prompt). share the copied URL" ;;
+    esac
+  fi
 }
 
 devdown() {
@@ -162,7 +205,7 @@ devdown() {
 
   # kill any OTHER cloudflared pointed at this port (orphans from elsewhere).
   # Scoped to the port, so a tunnel for another project is never touched.
-  pkill -f "cloudflared tunnel.*localhost:$port" 2>/dev/null
+  pkill -f "$(_dev_cf_pattern "$port")" 2>/dev/null
 
   # kill whatever actually holds the port — catches the next-server grandchild
   # that a parent kill would miss. escalate to -9 if it clings.
