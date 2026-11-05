@@ -11,10 +11,11 @@
 // single tiny request, so a fresh reading lands in the file (see Refresher).
 //
 // Build:  swiftc -O main.swift -o AuroraHUD      (needs Xcode Command Line Tools)
-// Use:    shows while the Claude desktop app is open, hides when it quits
+// Use:    stays hidden until a limit crosses its line (5h at 75%, 7d at 90% by
+//         default), and only shows while the Claude desktop app is open
 //         (✕ hides it until Claude next launches).
-//         Click to collapse/expand, click ↻ to refresh, drag to move,
-//         right-click for Refresh, themes and Quit.
+//         Click to collapse/expand, click ↻ to refresh, drag to move, right-click
+//         for Refresh, themes, each limit's line, "Hide until…" and Quit.
 
 import AppKit
 
@@ -214,6 +215,73 @@ enum Prefs {
         get { d.bool(forKey: "collapsed") }
         set { d.set(newValue, forKey: "collapsed") }
     }
+    /// Percent at which a limit raises the HUD. 0 = always, `off` = never.
+    /// Stored per limit: `defaults write AuroraHUD showAt.5h -float 75`
+    static func showAt(_ k: LimitKind) -> Double {
+        let key = "showAt.\(k.rawValue)"
+        return d.object(forKey: key) == nil ? k.defaultShowAt : d.double(forKey: key)
+    }
+    static func setShowAt(_ k: LimitKind, _ v: Double) { d.set(v, forKey: "showAt.\(k.rawValue)") }
+
+    /// While a limit is snoozed, it can't raise the HUD until it reaches this level.
+    static func snoozedUntil(_ k: LimitKind) -> Double? {
+        let key = "snooze.\(k.rawValue)"
+        return d.object(forKey: key) == nil ? nil : d.double(forKey: key)
+    }
+    static func setSnoozedUntil(_ k: LimitKind, _ v: Double?) {
+        let key = "snooze.\(k.rawValue)"
+        if let v = v { d.set(v, forKey: key) } else { d.removeObject(forKey: key) }
+    }
+}
+
+/// The two plan limits the HUD watches. The weekly one climbs slowly and can sit
+/// high for days, so it gets a later default line than the 5-hour one.
+enum LimitKind: String, CaseIterable {
+    case fiveHour = "5h", sevenDay = "7d"
+    var defaultShowAt: Double { self == .fiveHour ? 75 : 90 }
+    func reading(_ u: Usage) -> Double? { self == .fiveHour ? u.fiveHour : u.sevenDay }
+    func reset(_ u: Usage) -> TimeInterval? { self == .fiveHour ? u.fiveHourReset : u.sevenDayReset }
+}
+
+func levelLabel(_ v: Double) -> String {
+    v <= 0 ? "always" : v >= Gate.off ? "off" : "\(Int(v))%"
+}
+
+// MARK: - When to show
+//
+// Works like a low-fuel light, one per limit: the HUD stays out of sight until
+// either limit crosses its own line. "Hide until…" snoozes the limits that raised
+// it until each reaches its next step (90, then 95), or drops back under its line
+// (a reset), whichever comes first.
+
+enum Gate {
+    static let steps: [Double] = [90, 95]
+    static let untilReset: Double = 101 // above any real percent
+    static let off: Double = 101        // a "Show at" no reading can reach
+
+    /// Which limits want the HUD up right now. Also clears or keeps each snooze.
+    static func evaluate(_ u: Usage) -> Set<LimitKind> {
+        var raised = Set<LimitKind>()
+        for k in LimitKind.allCases {
+            let reading = u.problem == nil ? k.reading(u) : nil
+            let v = decide(peak: reading, showAt: Prefs.showAt(k), snoozedUntil: Prefs.snoozedUntil(k))
+            Prefs.setSnoozedUntil(k, v.snooze)
+            if v.show { raised.insert(k) }
+        }
+        return raised
+    }
+
+    static func decide(peak: Double?, showAt: Double, snoozedUntil: Double?) -> (show: Bool, snooze: Double?) {
+        if showAt <= 0 { return (true, nil) }                        // "Always"
+        guard let peak = peak else { return (false, snoozedUntil) }  // no reading yet
+        if peak < showAt { return (false, nil) }                     // under the line: clear any snooze
+        if let s = snoozedUntil, peak < s { return (false, s) }      // snoozed, not at the next step
+        return (true, nil)
+    }
+
+    static func nextStep(after peak: Double, showAt: Double) -> Double {
+        steps.first { $0 > peak && $0 > showAt } ?? untilReset
+    }
 }
 
 // MARK: - The panel
@@ -318,6 +386,12 @@ final class HUDView: NSView {
 
     private func control(at p: NSPoint) -> Control? { controls.first { rect($0).contains(p) } }
 
+    // The panel can hide under the cursor, so no exit event arrives.
+    func clearHover() {
+        tooltip.hide()
+        hovered = nil
+    }
+
     private let mono = NSFont.monospacedSystemFont(ofSize: 12, weight: .regular)
     private let monoBold = NSFont.monospacedSystemFont(ofSize: 12, weight: .bold)
 
@@ -347,12 +421,26 @@ final class HUDView: NSView {
             if let problem = usage.problem {
                 text(problem, color(th.mute)).draw(at: NSPoint(x: 14, y: 25))
             } else {
-                drawRow(th, y: 14, label: "5h", pct: usage.fiveHour, reset: usage.fiveHourReset)
-                drawRow(th, y: 36, label: "7d", pct: usage.sevenDay, reset: usage.sevenDayReset)
+                drawExpanded(th)
             }
             drawFooter(th)
         }
         for c in controls { drawControl(c, th) }
+    }
+
+    /// Past its own line (or set to "always"). Limits that aren't are drawn dimmed,
+    /// so a glance shows which one raised the HUD.
+    func isPast(_ k: LimitKind) -> Bool {
+        let line = Prefs.showAt(k)
+        if line <= 0 { return true }
+        return (k.reading(usage) ?? 0) >= line
+    }
+
+    private func dimmed(_ k: LimitKind, _ draw: () -> Void) {
+        NSGraphicsContext.saveGraphicsState()
+        if !isPast(k) { NSGraphicsContext.current?.cgContext.setAlpha(0.4) }
+        draw()
+        NSGraphicsContext.restoreGraphicsState()
     }
 
     private func drawControl(_ c: Control, _ th: Theme) {
@@ -393,18 +481,30 @@ final class HUDView: NSView {
         let foot: String
         if refreshing { foot = "Refreshing…" }
         else if refreshFailed { foot = "Refresh didn't finish · try again" }
-        else if let age = usage.sampleAge { foot = age < 60 ? "Updated just now" : "Updated \(duration(age)) ago" }
-        else { foot = "" }
+        else if usage.isStale { foot = "Last reading \(duration(usage.sampleAge)) ago" }
+        else { foot = "Shows at 5h \(levelLabel(Prefs.showAt(.fiveHour))) · 7d \(levelLabel(Prefs.showAt(.sevenDay)))" }
         let stale = usage.isStale && !refreshing
         text(foot, stale ? color(th.warn, 0.9) : color(th.mute, 0.7)).draw(at: NSPoint(x: 14, y: 57))
     }
 
     private func drawCollapsed(_ th: Theme) {
         var x: CGFloat = 14
-        for (label, pct) in [("5h ", usage.fiveHour), ("  7d ", usage.sevenDay)] {
-            let l = text(label, color(th.mute)); l.draw(at: NSPoint(x: x, y: 7)); x += l.size().width
-            let p = text(pct.map { "\(Int($0.rounded()))%" } ?? "–", spectrum(th, CGFloat((pct ?? 0) / 100)), bold: true)
-            p.draw(at: NSPoint(x: x, y: 7)); x += p.size().width
+        for (i, k) in LimitKind.allCases.enumerated() {
+            let pct = k.reading(usage)
+            dimmed(k) {
+                let l = text((i == 0 ? "" : "  ") + k.rawValue + " ", color(th.mute))
+                l.draw(at: NSPoint(x: x, y: 7)); x += l.size().width
+                let p = text(pct.map { "\(Int($0.rounded()))%" } ?? "–", spectrum(th, CGFloat((pct ?? 0) / 100)), bold: true)
+                p.draw(at: NSPoint(x: x, y: 7)); x += p.size().width
+            }
+        }
+    }
+
+    private func drawExpanded(_ th: Theme) {
+        for (i, k) in LimitKind.allCases.enumerated() {
+            dimmed(k) {
+                drawRow(th, y: 14 + CGFloat(i) * 22, label: k.rawValue, pct: k.reading(usage), reset: k.reset(usage))
+            }
         }
     }
 
@@ -513,6 +613,35 @@ final class HUDView: NSView {
         menu.addItem(bars)
 
         menu.addItem(.separator())
+
+        // One "Show … at" submenu per limit.
+        for k in LimitKind.allCases {
+            let showItem = NSMenuItem(title: "Show \(k.rawValue) at", action: nil, keyEquivalent: "")
+            let showSub = NSMenu()
+            for (title, level) in [("Always", 0.0), ("50%", 50.0), ("75%", 75.0), ("90%", 90.0), ("Off", Gate.off)] {
+                let item = NSMenuItem(title: title, action: #selector(pickShowAt(_:)), keyEquivalent: "")
+                item.target = self
+                item.representedObject = "\(k.rawValue):\(level)"
+                item.state = Prefs.showAt(k) == level ? .on : .off
+                showSub.addItem(item)
+            }
+            showItem.submenu = showSub
+            menu.addItem(showItem)
+        }
+
+        // "Hide until 5h hits 90% or 7d resets": names only the limits holding the HUD up.
+        let holding = snoozable()
+        if !holding.isEmpty {
+            let parts = holding.map { k, next in
+                next == Gate.untilReset ? "\(k.rawValue) resets" : "\(k.rawValue) hits \(Int(next))%"
+            }
+            let hide = NSMenuItem(title: "Hide until " + parts.joined(separator: " or "),
+                                  action: #selector(snooze), keyEquivalent: "")
+            hide.target = self
+            menu.addItem(hide)
+        }
+
+        menu.addItem(.separator())
         let quit = NSMenuItem(title: "Quit Aurora HUD", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
         quit.target = NSApp
         menu.addItem(quit)
@@ -527,6 +656,31 @@ final class HUDView: NSView {
     }
 
     @objc private func refreshNow() { (window as? HUDPanel)?.refreshNow() }
+
+    /// Limits currently holding the HUD up (past a real line, not already snoozed),
+    /// each with the level its snooze would wait for.
+    func snoozable() -> [(LimitKind, Double)] {
+        LimitKind.allCases.compactMap { k in
+            let line = Prefs.showAt(k)
+            guard line > 0, line < Gate.off, Prefs.snoozedUntil(k) == nil,
+                  let reading = k.reading(usage), reading >= line else { return nil }
+            return (k, Gate.nextStep(after: reading, showAt: line))
+        }
+    }
+
+    @objc private func pickShowAt(_ sender: NSMenuItem) {
+        guard let tag = sender.representedObject as? String else { return }
+        let bits = tag.split(separator: ":")
+        guard bits.count == 2, let k = LimitKind(rawValue: String(bits[0])), let level = Double(bits[1]) else { return }
+        Prefs.setShowAt(k, level)
+        Prefs.setSnoozedUntil(k, nil)
+        (window as? HUDPanel)?.refresh()
+    }
+
+    @objc private func snooze() {
+        for (k, next) in snoozable() { Prefs.setSnoozedUntil(k, next) }
+        (window as? HUDPanel)?.refresh()
+    }
 
     @objc private func toggleBars() {
         Prefs.blockBars.toggle()
@@ -569,15 +723,41 @@ final class HUDPanel: NSPanel {
         hud.needsDisplay = true
     }
 
+    private var isShown = false
+
+    /// Fades in or out. Hidden means ordered out, so it takes no clicks and no space.
+    func setShown(_ show: Bool) {
+        guard show != isShown else { return }
+        isShown = show
+        if show {
+            alphaValue = 0
+            orderFrontRegardless()
+        } else {
+            hud.clearHover()
+        }
+        NSAnimationContext.runAnimationGroup({ ctx in
+            ctx.duration = 0.35
+            self.animator().alphaValue = show ? 1 : 0
+        }, completionHandler: {
+            if !self.isShown { self.orderOut(nil) } // skip if it was shown again mid-fade
+        })
+    }
+
+    // Up only while Claude is open, a limit is past its line, and ✕ hasn't hidden it.
+    // The gate always runs, so snoozes still clear while the panel is hidden.
     func refresh() {
-        hud.usage = UsageReader.read()
+        let u = UsageReader.read()
+        hud.usage = u
         hud.needsDisplay = true
+
+        let raised = !Gate.evaluate(u).isEmpty
+        let claudeOpen = !NSRunningApplication.runningApplications(withBundleIdentifier: CLAUDE_APP).isEmpty
+        setShown(raised && claudeOpen && !dismissed)
     }
 
     func dismiss() {
         dismissed = true
-        hud.tooltip.hide()
-        orderOut(nil)
+        refresh()
     }
 
     func refreshNow() {
@@ -602,38 +782,26 @@ final class HUDPanel: NSPanel {
 
 let app = NSApplication.shared
 app.setActivationPolicy(.accessory) // no Dock icon
-let panel = HUDPanel()
-panel.refresh()
-
-// The panel shows only while the Claude desktop app is running. macOS posts
-// launch and quit notifications, so there's no polling; while hidden the HUD
-// just sits idle.
+// Set before the first refresh, which reads it.
 let CLAUDE_APP = "com.anthropic.claudefordesktop"
+let panel = HUDPanel()
+panel.alphaValue = 0
 
-func followClaude() {
-    let running = !NSRunningApplication.runningApplications(withBundleIdentifier: CLAUDE_APP).isEmpty
-    if running && !panel.dismissed {
-        panel.refresh()
-        panel.orderFrontRegardless()
-    } else {
-        panel.hud.tooltip.hide()
-        panel.orderOut(nil)
-    }
-}
-
+// macOS posts launch and quit notifications, so the panel reacts to Claude
+// opening or closing right away instead of on the next timer tick.
 for name in [NSWorkspace.didLaunchApplicationNotification, NSWorkspace.didTerminateApplicationNotification] {
     NSWorkspace.shared.notificationCenter.addObserver(forName: name, object: nil, queue: .main) { note in
         let changed = note.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication
         guard changed?.bundleIdentifier == CLAUDE_APP else { return }
         // A fresh launch brings back a HUD that was closed.
         if note.name == NSWorkspace.didLaunchApplicationNotification { panel.dismissed = false }
-        followClaude()
+        panel.refresh()
     }
 }
-followClaude()
+panel.refresh() // appears only if a limit is already past its line
 
-// The mod writes after every Claude Code response; checking every 30s keeps
-// countdowns and the "Updated" age fresh.
+// The mod writes after every Claude Code response; checking every 30s picks up
+// new readings, keeps countdowns fresh and raises the HUD when a line is crossed.
 let timer = Timer(timeInterval: 30, repeats: true) { _ in panel.refresh() }
 RunLoop.main.add(timer, forMode: .common)
 
