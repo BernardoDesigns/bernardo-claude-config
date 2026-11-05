@@ -1,0 +1,8 @@
+{
+  "name": "sketchpad",
+  "version": "0.1.0",
+  "description": "A side conversation docked beside your Claude Code session: brainstorm, refine it into a prompt, send it to the prompt box",
+  "types": "./types/index.d.ts",
+  "author": { "name": "Bernardo" },
+  "license": "MIT"
+}

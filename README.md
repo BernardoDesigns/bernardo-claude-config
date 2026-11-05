@@ -86,6 +86,12 @@ Neither piece makes a network call, reads a login token, or pulls in third-party
 
 ---
 
+## Sketchpad
+
+A side conversation docked next to the session, where I brainstorm and refine a prompt before sending it to the prompt box. Details in [`sketchpad/`](sketchpad/).
+
+---
+
 ## New machine setup
 
 ```bash
