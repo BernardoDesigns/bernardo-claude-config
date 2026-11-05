@@ -187,8 +187,8 @@ func duration(_ s: TimeInterval?) -> String {
 
 // MARK: - Preferences
 
-// Theme and bar style live in the shared file, so the HUD and the band always
-// match; UserDefaults is the fallback before the file exists.
+// Theme, bar style, lines and snoozes live in the shared file, so the HUD and the
+// band always match; UserDefaults is the theme and bar fallback before the file exists.
 enum Prefs {
     static let d = UserDefaults.standard
     static var theme: Theme {
@@ -215,23 +215,26 @@ enum Prefs {
         get { d.bool(forKey: "collapsed") }
         set { d.set(newValue, forKey: "collapsed") }
     }
-    /// Percent at which a limit raises the HUD. 0 = always, `off` = never.
-    /// Stored per limit: `defaults write AuroraHUD showAt.5h -float 75`
-    static func showAt(_ k: LimitKind) -> Double {
-        let key = "showAt.\(k.rawValue)"
-        return d.object(forKey: key) == nil ? k.defaultShowAt : d.double(forKey: key)
+
+    // Lines and snoozes live in the shared file too, so the band follows them.
+    // Written only on a change, since the gate runs every 30s alongside the mod.
+    private static func level(_ section: String, _ k: LimitKind) -> Double? {
+        UsageReader.num((SharedFile.read()[section] as? [String: Any])?[k.rawValue])
     }
-    static func setShowAt(_ k: LimitKind, _ v: Double) { d.set(v, forKey: "showAt.\(k.rawValue)") }
+    private static func setLevel(_ section: String, _ k: LimitKind, _ v: Double?) {
+        guard level(section, k) != v else { return }
+        var levels = SharedFile.read()[section] as? [String: Any] ?? [:]
+        if let v = v { levels[k.rawValue] = v } else { levels.removeValue(forKey: k.rawValue) }
+        SharedFile.set(section, levels)
+    }
+
+    /// Percent at which a limit raises the HUD. 0 = always, `off` = never.
+    static func showAt(_ k: LimitKind) -> Double { level("showAt", k) ?? k.defaultShowAt }
+    static func setShowAt(_ k: LimitKind, _ v: Double) { setLevel("showAt", k, v) }
 
     /// While a limit is snoozed, it can't raise the HUD until it reaches this level.
-    static func snoozedUntil(_ k: LimitKind) -> Double? {
-        let key = "snooze.\(k.rawValue)"
-        return d.object(forKey: key) == nil ? nil : d.double(forKey: key)
-    }
-    static func setSnoozedUntil(_ k: LimitKind, _ v: Double?) {
-        let key = "snooze.\(k.rawValue)"
-        if let v = v { d.set(v, forKey: key) } else { d.removeObject(forKey: key) }
-    }
+    static func snoozedUntil(_ k: LimitKind) -> Double? { level("snooze", k) }
+    static func setSnoozedUntil(_ k: LimitKind, _ v: Double?) { setLevel("snooze", k, v) }
 }
 
 /// The two plan limits the HUD watches. The weekly one climbs slowly and can sit
@@ -249,6 +252,7 @@ func levelLabel(_ v: Double) -> String {
 
 // MARK: - When to show
 //
+// Same rules as the mod's hooks/gate.ts.
 // Works like a low-fuel light, one per limit: the HUD stays out of sight until
 // either limit crosses its own line. "Hide until…" snoozes the limits that raised
 // it until each reaches its next step (90, then 95), or drops back under its line

@@ -9,6 +9,15 @@ export type Snapshot = {
   costUsd?: number
 }
 
+export type LimitKey = '5h' | '7d'
+
+// The lines and snoozes, as they sit in the shared file. A missing line means
+// the default, a missing snooze means not snoozed.
+export type Gate = {
+  showAt: Partial<Record<LimitKey, number>>
+  snooze: Partial<Record<LimitKey, number>>
+}
+
 // ~/.claude/aurora-usage.json, shared with the floating HUD (main.swift reads
 // and writes the same keys).
 export type Shared = {
@@ -18,6 +27,8 @@ export type Shared = {
   sevenDay?: Limit | null
   theme?: string
   glyph?: 'thin' | 'block'
+  showAt?: Gate['showAt']
+  snooze?: Gate['snooze']
 }
 
 declare module 'claude-code' {
@@ -28,6 +39,7 @@ declare module 'claude-code' {
       theme: string
       glyph: 'thin' | 'block'
       now: number
+      gate: Gate
     }
   }
 }

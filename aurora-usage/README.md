@@ -1,6 +1,6 @@
 # Aurora Usage
 
-Two gauges wired to one fuel tank: a thin-line usage billboard inside Claude Code, and a floating HUD that comes up over the Claude desktop app when a limit runs high, so you catch it while you brainstorm in Chat and Projects.
+Two gauges wired to one fuel tank: a thin-line usage billboard inside Claude Code, and a floating HUD that comes up over the Claude desktop app, so you catch a limit running high while you brainstorm in Chat and Projects. Both stay quiet about your limits until one crosses its line.
 
 ```
 5h ━━━━━━━━━━━━ 31% ⏰1h38m │ 7d ━━━━━━━━━━━━ 64% ⏰2d15h │ Opus 5.5 ━━━━━━━━━━━━ 42% 420.0k/1.0M │ $1.42
@@ -44,8 +44,8 @@ claude --plugin-dir ~/LocalDev/bernardo-claude-config/aurora-usage/aurora-billbo
 | `/billboard theme tide` | Teal to blue to violet |
 | `/billboard theme mono` | Quiet grays, white when hot |
 | `/billboard bars block` | Chunky ■ cells instead of thin ━ |
-
-You'll get a toast when either limit crosses 80% and again at 95%, once per window.
+| `/billboard show 5h 75` | When a limit shows: a percent, `always`, or `off` |
+| `/billboard hide` | Hide the limits until the next step or the reset |
 
 When either window passes 100% the band adds `⚡ using credits`. A window whose reset time has passed drops back to 0% right away instead of waiting for the next response.
 
@@ -53,34 +53,31 @@ The band adapts to width: bars shrink on narrow windows, token counts drop off u
 
 ## When it shows
 
-The HUD works like a low-fuel light. It stays out of sight until a limit crosses its own line, and it only comes up while the Claude desktop app is open. It starts at login and waits in the background.
+The 5h and 7d limits work like a low-fuel light, in both the band and the HUD. They stay out of sight until a limit crosses its own line. Then both limits show, with the one under its line dimmed. The two share their lines and snoozes through `~/.claude/aurora-usage.json`, so changing one changes the other within 30 seconds.
+
+**In the band**, that's the 5h and 7d segments, in the terminal and the Code tab. Model, context, and cost have no line, so they always show. `⚡ using credits` always shows too, even for a limit that's snoozed or off, because that's money.
+
+**The HUD** also only comes up while the Claude desktop app is open. It starts at login and waits in the background. The band doesn't care whether the app is open, so you still get the warning in a terminal-only session.
 
 | Limit | Shows at | Why |
 | --- | --- | --- |
 | 5h | 75% | Burns fast, so you want the early warning |
 | 7d | 90% | Climbs slowly, and a lower line would keep the HUD up for days |
 
-Change either line by right-clicking the HUD: **Show 5h at** and **Show 7d at** offer Always, 50%, 75%, 90%, and Off. The footer shows the current lines, like `Shows at 5h 75% · 7d 90%`.
+**Changing a line.** Use whichever is handy:
 
-**Dimming.** A limit under its line draws at 40% opacity, so a glance tells you which one raised the HUD.
+- In Claude Code: `/billboard show 5h 75`, or `/billboard show 7d always`, or `/billboard show 7d off`. Plain `/billboard` lists the current lines
+- On the HUD: right-click for **Show 5h at** and **Show 7d at**, with Always, 50%, 75%, 90%, and Off. The footer shows the current lines, like `Shows at 5h 75% · 7d 90%`
 
-**Hot border.** The border glows in the theme's hot color once either limit hits 90%.
+When everything's hidden, the `/billboard` command is the way in, since the HUD has nothing to right-click.
 
-**Snoozing.** Right-click and pick **Hide until…**. The label names whatever is holding the HUD up, like `Hide until 5h hits 90%`. Each snooze waits for the next step, 90 then 95, and past 95 it waits for the reset. A limit dropping back under its line clears its snooze.
+**Dimming.** A limit under its line fades back, so a glance tells you which one raised the readout.
 
-**Closing.** The ✕ hides the HUD until the next time you open the Claude desktop app. That's separate from snoozing, which follows the limits.
+**Snoozing.** `/billboard hide` or the HUD's **Hide until…**. It names whatever is holding things up, like `5h hits 90%`. Each snooze waits for the next step, 90 then 95, and past 95 it waits for the reset. A limit dropping back under its line clears its snooze.
 
-**Changing a line while the HUD is hidden.** There's nothing to right-click, so use the terminal. Percentages work the same way as the menu, 0 means always, and 101 means off:
+**Toasts.** Claude Code gives you a toast when a limit crosses its line and again at 95%, once per window. A limit set to Off stays quiet.
 
-```bash
-defaults write AuroraHUD showAt.5h -float 75
-defaults write AuroraHUD showAt.7d -float 90
-launchctl kickstart -k gui/$(id -u)/com.bernardo.aurora-hud   # restart so it takes effect
-
-# back to the defaults
-defaults delete AuroraHUD showAt.5h
-defaults delete AuroraHUD showAt.7d
-```
+**HUD only.** The border glows in the theme's hot color once either limit hits 90%. The ✕ hides the HUD until the next time you open the Claude desktop app, which is separate from snoozing and doesn't touch the band.
 
 **The rest of the panel**
 
@@ -106,7 +103,7 @@ defaults delete AuroraHUD showAt.7d
 | Billboard mod | None | None | Writes one file: `~/.claude/aurora-usage.json` | None |
 | HUD | None of its own (Refresh launches the `claude` CLI, which makes one request) | None | Reads and writes that same file | None |
 
-The mod only uses Claude Code's own `$.session.usage()` and its file API. The shared file holds percentages, reset times, a timestamp, and the theme: nothing personal, no tokens. The HUD is plain AppKit and Foundation, no third-party code. Every line is yours to read.
+The mod only uses Claude Code's own `$.session.usage()` and its file API. The shared file holds percentages, reset times, a timestamp, the theme, and your lines and snoozes: nothing personal, no tokens. The HUD is plain AppKit and Foundation, no third-party code. Every line is yours to read.
 
 ## Uninstall
 
