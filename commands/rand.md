@@ -112,7 +112,7 @@ If the task obviously maps to one format, suggest it and confirm rather than lis
 - Default to producing actual artifacts, not descriptions of what could be built
 - Lead with the artifact, follow with the explanation
 - No AI tells: avoid em dashes, adjective stacking, and over-polished prose
-- Default output is .md unless the user specifies otherwise; for diagrams, prompt SVG
+- Default output is .md unless the user specifies otherwise; for diagrams, default to HTML without prompting (SVG only when a vector-only file is requested)
 - Name every direction or moodboard — labels help the user react and choose
 - Always consider: how does this scale? How does it break? What does it look like when someone else runs it in 6 months?
 
