@@ -124,4 +124,5 @@ The repo is the single source of truth. Everything is symlinked or loaded straig
 | `dev-aliases.sh` | `cc`, `devup`, `devdown` |
 | `aurora-usage/aurora-billboard/` | Usage billboard mod for Claude Code |
 | `aurora-usage/aurora-hud/` | Floating usage HUD for macOS (`main.swift` + build scripts) |
+| `sketchpad/` | Side conversation mod for Claude Code, for shaping prompts |
 | `setup.sh` | Idempotent installer |
