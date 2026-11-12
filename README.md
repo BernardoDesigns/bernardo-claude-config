@@ -50,7 +50,7 @@ cc        # starts the dev server + a Cloudflare tunnel, then launches Claude Co
 /exit     # quits Claude Code and tears down the server + tunnel
 ```
 
-- The public tunnel URL is copied to the clipboard so I can share a live preview right away. My own browser opens `localhost` instead, which skips Chrome's Local Network Access prompt (every tunnel is a new random hostname, so Chrome would otherwise ask on every launch). `DEV_OPEN=tunnel` opens the tunnel URL, `DEV_OPEN=none` opens nothing.
+- The public tunnel URL is copied to the clipboard and opened in the browser, so I can share a live preview right away. `DEV_OPEN=local` opens `localhost` instead (skips Chrome's Local Network Access prompt), `DEV_OPEN=none` opens nothing.
 - The tunnel dials whichever loopback address the server actually answers on (`127.0.0.1` or `::1`), so it stays steady whether the project is static, Next or Vite.
 - Works the same on a fresh start or a resume (`cc --resume`, `cc --continue`).
 - The port is auto-detected from `package.json` (3000 for Next, 5173 for Vite).

@@ -23,11 +23,11 @@
 # tunnel dials whichever address the server actually answers on, so npm/Vite
 # servers that only listen on one of them work too.
 #
-# Your own browser opens http://localhost:<port>, not the tunnel URL. Chrome
-# asks permission (Local Network Access) whenever a public page calls
-# localhost, and every tunnel is a new random hostname, so it would ask on
-# every launch. The tunnel URL is still copied to the clipboard for sharing.
-# Set DEV_OPEN=tunnel to open the tunnel URL instead, or DEV_OPEN=none.
+# The browser opens the public tunnel URL (and it's copied to the clipboard),
+# so what you see is exactly what you share. Chrome may show a Local Network
+# Access prompt if the page calls localhost; every tunnel is a new hostname,
+# so it can ask each launch. Set DEV_OPEN=local to open http://localhost:<port>
+# instead (no prompt), or DEV_OPEN=none to open nothing.
 
 # Loopback only (both lines); the tunnel is the only way in from outside.
 _DEV_STATIC_PY='
@@ -183,10 +183,10 @@ devup() {
   echo "public URL:  $url  (tunnel -> $origin)"
   command -v pbcopy >/dev/null 2>&1 && printf '%s' "$url" | pbcopy && echo "  (copied to clipboard)"
   if command -v open >/dev/null 2>&1; then
-    case "${DEV_OPEN:-local}" in
-      tunnel) open "$url" ;;
-      none)   ;;
-      *)      open "http://localhost:$port"; echo "  opened localhost:$port (no Chrome prompt). share the copied URL" ;;
+    case "${DEV_OPEN:-tunnel}" in
+      local) open "http://localhost:$port" ;;
+      none)  ;;
+      *)     open "$url" ;;
     esac
   fi
 }
